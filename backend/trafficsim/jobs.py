@@ -48,7 +48,7 @@ class JobManager:
         self._halt: dict = {}        # job id -> Event that stops remaining seeds (cancel or a failed seed)
         self._procs_of: dict = {}    # job id -> set of running subprocess.Popen
 
-    def submit(self, s: Scenario, seeds: list) -> dict:
+    def submit(self, s: Scenario, seeds: list, depart_jitter_s: float = 0) -> dict:
         rid = uuid.uuid4().hex[:10]
         job = dict(id=rid, run_id=rid, scenario_id=s.id, state="queued", done=0, total=len(seeds),
                    message="Waiting to start", warnings=[], error=None, stage=None, trace=None,
@@ -58,7 +58,7 @@ class JobManager:
             self._cancel[rid] = threading.Event()
             self._halt[rid] = threading.Event()
             self._procs_of[rid] = set()
-        self._orch.submit(self._run, rid, s.model_copy(deep=True), seeds)
+        self._orch.submit(self._run, rid, s.model_copy(deep=True), seeds, depart_jitter_s)
         return dict(job)
 
     def status(self, jid: str) -> dict:
@@ -91,11 +91,12 @@ class JobManager:
         with self._lock:
             self.jobs[rid].update(kw)
 
-    def _run(self, rid: str, s: Scenario, seeds: list):
+    def _run(self, rid: str, s: Scenario, seeds: list, depart_jitter_s: float = 0):
         out = RUNS_DIR / rid
         out.mkdir(parents=True, exist_ok=True)
         record = dict(id=rid, scenario=s.model_dump(), seeds=seeds, state="building",
-                      started=time.time(), warnings=[], seed_results=[], versions=versions())
+                      started=time.time(), warnings=[], seed_results=[], versions=versions(),
+                      depart_jitter_s=depart_jitter_s)
         stop, halt = self._cancel[rid], self._halt[rid]
         stage = "build"
         try:
@@ -110,7 +111,8 @@ class JobManager:
                       stage="simulation")
             base = dict(net_file=str(b.net_file), demand_file=str(b.demand_file),
                         tls_additional=str(b.tls_additional) if b.tls_additional else None,
-                        begin=b.begin, end=b.end, scale=s.demand_scale, controller=s.controller)
+                        begin=b.begin, end=b.end, scale=s.demand_scale, controller=s.controller,
+                        depart_jitter_s=depart_jitter_s)
             futs = [self._procs.submit(run_seed_subprocess, dict(base, seed=k, out_dir=str(out / f"seed_{k}")),
                                        halt, self._procs_of[rid], self._lock)
                     for k in seeds]
@@ -227,6 +229,7 @@ def list_runs(scenario_id: str | None = None) -> list:
                         parent_id=r["scenario"].get("parent_id"), error=r.get("error"), stage=r.get("stage"),
                         demand_scale=r["scenario"]["demand_scale"], edits=len(r["scenario"]["edits"]),
                         state=r["state"], seeds=r["seeds"], started=r.get("started"),
+                        depart_jitter_s=r.get("depart_jitter_s", 0),
                         finished=r.get("finished"), versions=r.get("versions"),
                         teleports=agg.get("teleports", {}).get("mean"),
                         mean_travel_time_s=agg.get("mean_travel_time_s", {}).get("mean")))

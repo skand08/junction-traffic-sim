@@ -163,3 +163,39 @@ def test_matched_trips_compare_like_for_like():
     assert (k["before"], k["after"]) == (100, 90)          # only trip x is in both and normal
     assert c["matched"]["trips"] == 1 and abs(c["matched"]["share"] - 1 / 3) < 1e-9
     assert c["kpis"]["mean_travel_time_s"]["after"] == 90   # per-option average still reported
+
+
+def test_depart_jitter_is_seeded_sorted_and_in_window(tmp_path):
+    from trafficsim import runner
+    import xml.etree.ElementTree as ET
+    src = tmp_path / "d.rou.xml"
+    src.write_text('<routes><vType id="t"/>' + "".join(
+        f'<trip id="v{i}" depart="{i * 10}" from="a" to="b"/>' for i in range(100)) + "</routes>")
+
+    calls = [0]
+
+    def departs(seed, j):
+        calls[0] += 1
+        out = tmp_path / f"s{seed}_{j}_{calls[0]}"
+        out.mkdir()
+        f = runner._demand_for_seed(dict(demand_file=str(src), depart_jitter_s=j, seed=seed, begin=0, end=990), out)
+        root = ET.parse(f).getroot()
+        assert root[0].tag == "vType"
+        return [float(t.get("depart")) for t in root.iter("trip")]
+    a, a_again, other = departs(1, 120), departs(1, 120), departs(2, 120)
+    assert a == sorted(a) and min(a) >= 0 and max(a) <= 990
+    assert a == a_again                      # same seed, same shifts: both options see the same traffic
+    assert a != [i * 10 for i in range(100)] and a != other
+    assert departs(4, 0) == [i * 10 for i in range(100)]
+
+
+def test_run_records_depart_jitter():
+    base = c.post("/api/scenarios", json=dict(base_network="grid3x3", name="Base")).json()
+    j = c.post(f"/api/scenarios/{base['id']}/runs", json=dict(seeds=[1, 2], depart_jitter_s=120)).json()
+    assert wait(j["id"])["state"] == "done"
+    r = c.get(f"/api/runs/{j['id']}").json()
+    assert r["depart_jitter_s"] == 120
+    j2 = c.post(f"/api/scenarios/{base['id']}/runs", json=dict(seeds=[1, 2], depart_jitter_s=120)).json()
+    wait(j2["id"])
+    r2 = c.get(f"/api/runs/{j2['id']}").json()
+    assert r2["aggregate"]["kpis"]["mean_travel_time_s"]["values"] == r["aggregate"]["kpis"]["mean_travel_time_s"]["values"]
