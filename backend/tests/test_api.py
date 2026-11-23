@@ -123,3 +123,26 @@ def test_experiment_bundle_and_history():
     assert wait(jr["id"])["state"] == "done"
     rr = c.get(f"/api/runs/{jr['id']}").json()
     assert rr["aggregate"]["kpis"]["mean_travel_time_s"]["values"] == b["experiment"]["values"]["mean_travel_time_s"]["after"]
+
+
+def test_measurement_counts_queue_to_enter_and_flags_teleports(tmp_path):
+    """Travel time runs from the planned start (depart - departDelay); teleported trips leave the average."""
+    from trafficsim import runner
+    out = tmp_path
+    (out / "tripinfo.xml").write_text("""<tripinfos>
+      <tripinfo id="a" depart="10" departDelay="0" arrival="110" duration="100" timeLoss="20" waitingTime="5" waitingCount="1" vaporized=""/>
+      <tripinfo id="b" depart="3700" departDelay="200" arrival="3800" duration="100" timeLoss="20" waitingTime="5" waitingCount="1" vaporized=""/>
+      <tripinfo id="c" depart="20" departDelay="0" arrival="400" duration="380" timeLoss="300" waitingTime="290" waitingCount="3" vaporized=""/>
+      <tripinfo id="d" depart="30" departDelay="0" arrival="-1" duration="-1" timeLoss="50" waitingTime="0" waitingCount="0" vaporized="end"/>
+      <tripinfo id="e" depart="3700" departDelay="10" arrival="3800" duration="100" timeLoss="0" waitingTime="0" waitingCount="0" vaporized=""/>
+    </tripinfos>""")
+    (out / "sumo.log").write_text("Warning: Teleporting vehicle 'c'; waited too long (jam), lane='x_0', time=300.00.\n")
+    (out / "stats.xml").write_text('<statistics><vehicles loaded="5" inserted="5" running="0" waiting="0"/><teleports total="1"/></statistics>')
+    (out / "edges.xml").write_text("<meandata/>")
+    r = runner._parse(dict(begin=0, end=3600), out)
+    k = r["kpi"]
+    # a (100 s) and b (planned 3500, so in the hour; 100 + 200 s queue) count; c teleported; d unfinished;
+    # e is planned at 3690, after the hour, so it is not part of the demand hour at all
+    assert k["completed_trips"] == 2 and k["mean_travel_time_s"] == 200 and k["mean_delay_s"] == 120
+    assert k["teleported_trips"] == 1 and k["unfinished_trips"] == 1 and k["late_departures"] == 1
+    assert r["trips"]["c"][2] == runner.TELEPORTED and "e" not in r["trips"]

@@ -59,18 +59,22 @@ export type Quality = { level: "good" | "caution" | "unreliable"; rows: QRow[]; 
 export function quality(cmp: Comparison, before?: Run | null, after?: Run | null): Quality {
   const k = cmp.kpis;
   const v = (key: string, side: "before" | "after") => (k[key] ? k[key][side] : null);
-  const legacy = !k.late_departures;      // runs made before these counts existed
+  const v2 = !!k.teleported_trips;        // measurement version 2: planned-start timing, teleported trips flagged
+  const legacy = !v2;
   const rows: QRow[] = [
-    { key: "teleports", label: "Teleport events", before: v("teleports", "before"), after: v("teleports", "after"),
-      explain: "Stuck cars jumped ahead. Makes travel time look better than it is." },
+    v2
+      ? { key: "teleported_trips", label: "Teleported", before: v("teleported_trips", "before"), after: v("teleported_trips", "after"),
+          explain: "Stuck cars jumped ahead. Left out of travel time." }
+      : { key: "teleports", label: "Teleport events", before: v("teleports", "before"), after: v("teleports", "after"),
+          explain: "Stuck cars jumped ahead. Makes travel time look better than it is." },
     { key: "removed", label: "Removed by the simulator", before: v("removed", "before"), after: v("removed", "after"),
       explain: "Taken out before arriving." },
     { key: "unfinished_trips", label: "Unfinished", before: v("unfinished_trips", "before"), after: v("unfinished_trips", "after"),
       explain: "Still driving at the end. Not in travel time." },
     { key: "dropped", label: "Skipped because of a closure", before: droppedTrips(before), after: droppedTrips(after),
       explain: "A closed road cut their route." },
-    { key: "late_departures", label: "Started after the demand hour", before: v("late_departures", "before"), after: v("late_departures", "after"),
-      explain: "Queued so long they started late. Left out of all results." },
+    ...(v2 ? [] : [{ key: "late_departures", label: "Started after the demand hour", before: v("late_departures", "before"), after: v("late_departures", "after"),
+      explain: "Queued so long they started late. Left out of all results." }]),
     { key: "not_inserted", label: "Never entered the network", before: v("not_inserted", "before"), after: v("not_inserted", "after"),
       explain: "Never got onto the road. Left out of all results." },
   ];
@@ -111,7 +115,7 @@ export function QualityBanner({ q, n, labels }: { q: Quality; n: number; labels?
           </tbody>
         </table>
       )}
-      {q.legacy && <p className="small">Older runs: some of these counts were not recorded.</p>}
+      {q.legacy && <p className="small">These runs use the old measurement: time spent queuing to enter was not counted. Run again for accurate numbers.</p>}
     </div>
   );
 }
@@ -206,7 +210,7 @@ export default function Results({ cmp, before, after, labels }: { cmp: Compariso
       <details>
         <summary>How these numbers and the verdict are worked out</summary>
         <ul>
-          <li><b>Travel time</b> is the average time from a car's start to its destination, for trips that finished and started within the demand hour.</li>
+          <li><b>Travel time</b> runs from when a trip was planned to start to its arrival, so time spent queuing to enter the network counts. It covers trips planned within the demand hour that finished normally (no teleport).</li>
           <li><b>Delay</b> is the extra time compared with driving the same route on empty roads, mostly waiting at signals and in queues.</li>
           <li><b>Paired runs:</b> each option ran {n} times. Run 1 of both options used the same random seed, run 2 the next, and so on, so each pair differs only by your change. Seeds vary driver behaviour and departure order; the trips themselves are the same in every run.</li>
           <li><b>95% range</b> is a t-interval on the {n} paired differences: mean ± t × standard deviation ÷ √{n}. It describes run-to-run variation in this model only; it does not cover errors in the network, demand or signal data.</li>

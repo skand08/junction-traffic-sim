@@ -1,9 +1,17 @@
-"""Run one seed of a scenario and extract KPIs and per-edge statistics.
+"""Run one seed of a scenario and extract KPIs, per-trip outcomes and per-edge statistics.
+
+Measurement rules (see README, "How results are measured"):
+- A trip belongs to the demand hour if its *planned* start (depart - departDelay) is in [begin, end].
+  Cars that queue before entering the network are therefore still counted.
+- Travel time and delay run from the planned start, so time spent queuing to enter is included.
+- Trips of vehicles that teleported (read from SUMO's log) are not "completed normally" and are kept
+  out of the travel-time averages; they are counted separately.
 
 Runs in a worker process. Fixed-time and actuated control are native SUMO programs (sumo binary);
 max-pressure is applied live through libsumo.
 """
 import os
+import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -33,7 +41,7 @@ def _common_args(job: dict, out: Path) -> list:
             "--step-length", str(config.STEP_LENGTH),
             "--time-to-teleport", str(TELEPORT_S), "--ignore-route-errors", "true",
             "--ignore-junction-blocker", str(JUNCTION_BLOCKER_S),
-            "--no-step-log", "true", "--no-warnings", "true",
+            "--no-step-log", "true", "--log", str(out / "sumo.log"),
             "--tripinfo-output", str(out / "tripinfo.xml"), "--tripinfo-output.write-unfinished", "true",
             "--statistic-output", str(out / "stats.xml")]
 
@@ -129,24 +137,51 @@ def _run_max_pressure(job: dict, out: Path):
         ls.close()
 
 
+TELEPORT_RE = re.compile(r"Teleporting vehicle '([^']+)'")
+# per-trip status codes stored with each seed result
+NORMAL, TELEPORTED, UNFINISHED, REMOVED = 0, 1, 2, 3
+
+
+def teleported_ids(out: Path) -> set:
+    log = out / "sumo.log"
+    if not log.exists():
+        return set()
+    with open(log, errors="replace") as f:
+        return {m.group(1) for line in f for m in [TELEPORT_RE.search(line)] if m}
+
+
 def _parse(job: dict, out: Path) -> dict:
     begin, end = job["begin"], job["end"]
     tt, loss, wait, stops = [], [], [], []
-    unfinished = 0
-    late = removed = 0      # data-quality counts only; they do not change the KPIs below
+    unfinished = removed = late = teleported = 0
+    tele = teleported_ids(out)
+    trips = {}               # trip id -> [travel time from planned start, delay incl. queue to enter, status]
     for t in ET.parse(out / "tripinfo.xml").getroot().iter("tripinfo"):
         dep = float(t.get("depart"))
-        if t.get("vaporized") not in (None, "", "end"):   # "end" = still running at the end (unfinished)
-            removed += 1
+        queue = max(0.0, float(t.get("departDelay", 0) or 0))
+        planned = dep - queue
+        if planned < begin or planned > end:
+            continue
         if dep > end:
-            late += 1
-        if dep < begin or dep > end:
+            late += 1                         # entered after the hour; still counted from now on
+        vap = t.get("vaporized") not in (None, "", "end")   # "end" = still running at the end
+        arrived = float(t.get("arrival", -1)) >= 0
+        if vap:
+            removed += 1
+            trips[t.get("id")] = [None, None, REMOVED]
             continue
-        if float(t.get("arrival", -1)) < 0:
+        if not arrived:
             unfinished += 1
+            trips[t.get("id")] = [None, None, UNFINISHED]
             continue
-        tt.append(float(t.get("duration")))
-        loss.append(float(t.get("timeLoss")))
+        d, l = float(t.get("duration")) + queue, float(t.get("timeLoss")) + queue
+        if t.get("id") in tele:
+            teleported += 1
+            trips[t.get("id")] = [round(d, 1), round(l, 1), TELEPORTED]
+            continue
+        trips[t.get("id")] = [round(d, 1), round(l, 1), NORMAL]
+        tt.append(d)
+        loss.append(l)
         wait.append(float(t.get("waitingTime")))
         stops.append(float(t.get("waitingCount")))
     st = ET.parse(out / "stats.xml").getroot()
@@ -156,7 +191,7 @@ def _parse(job: dict, out: Path) -> dict:
     kpi = dict(
         mean_travel_time_s=mean(tt), mean_delay_s=mean(loss), mean_waiting_s=mean(wait),
         mean_stops=mean(stops), completed_trips=len(tt), unfinished_trips=unfinished,
-        teleports=int(tel.get("total")) if tel is not None else 0,
+        teleports=int(tel.get("total")) if tel is not None else 0, teleported_trips=teleported,
         not_inserted=int(veh.get("waiting", 0)) if veh is not None else 0,
         late_departures=late, removed=removed,
         total_delay_veh_h=sum(loss) / 3600.0)
@@ -172,7 +207,7 @@ def _parse(job: dict, out: Path) -> dict:
                 delay_per_veh_s=round(float(e.get("timeLoss", 0)) / entered, 2) if entered else None,
                 waiting_s=float(e.get("waitingTime", 0)),
                 density=float(e.get("density", 0)) if e.get("density") else None)
-    return dict(kpi=kpi, edges=edges)
+    return dict(kpi=kpi, edges=edges, trips=trips, measure_version=2)
 
 
 def run_seed(job: dict) -> dict:
@@ -186,7 +221,7 @@ def run_seed(job: dict) -> dict:
         _run_native(job, out)
     res = _parse(job, out)
     res.update(seed=job["seed"], wall_s=round(time.perf_counter() - t0, 2))
-    for f in ("tripinfo.xml",):          # large; keep edges.xml and stats.xml
+    for f in ("tripinfo.xml", "sumo.log"):          # large; keep edges.xml and stats.xml
         try:
             os.remove(out / f)
         except OSError:
