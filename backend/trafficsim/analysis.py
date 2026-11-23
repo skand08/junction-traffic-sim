@@ -10,6 +10,10 @@ from statistics import mean, stdev
 from scipy import stats
 
 # KPI -> (label, unit, lower_is_better)
+MATCHED_INFO = {
+    "matched_travel_time_s": ("Average travel time, same trips", "s", True),
+    "matched_delay_s": ("Average delay, same trips", "s", True),
+}
 KPI_INFO = {
     "mean_travel_time_s": ("Average travel time", "s", True),
     "mean_delay_s": ("Average delay per trip", "s", True),
@@ -74,8 +78,30 @@ def compare(a: dict, b: dict, a_seeds: list, b_seeds: list, edge_limits: dict | 
     ib = {r["seed"]: r for r in b}
     common = sorted(set(ia) & set(ib))
     out = dict(paired_seeds=common, kpis={}, edges={})
-    for k, (label, unit, lower) in KPI_INFO.items():
-        pairs = [(ia[s]["kpi"].get(k), ib[s]["kpi"].get(k)) for s in common]
+    # Matched trips: per seed, only trips that finished normally in BOTH options. This keeps trips dropped
+    # by a closure, teleported, unfinished or removed in either option out of both averages, so the two
+    # options are compared on the same trips.
+    matched = {}
+    if common and all("trips" in ia[s] and "trips" in ib[s] for s in common):
+        cover = []
+        for s in common:
+            ta, tb = ia[s]["trips"], ib[s]["trips"]
+            ids = [t for t, v in ta.items() if v[2] == 0 and t in tb and tb[t][2] == 0]
+            n_all = len(set(ta) | set(tb)) or 1
+            cover.append((len(ids), len(ids) / n_all))
+            if ids:
+                for key, col in (("matched_travel_time_s", 0), ("matched_delay_s", 1)):
+                    matched.setdefault(key, {})[s] = (mean(ta[t][col] for t in ids), mean(tb[t][col] for t in ids))
+        out["matched"] = dict(trips=mean(c[0] for c in cover), share=mean(c[1] for c in cover))
+    info = dict(KPI_INFO, **{k: MATCHED_INFO[k] for k in matched})
+
+    def values(k, s):
+        if k in matched:
+            return matched[k].get(s, (None, None))
+        return ia[s]["kpi"].get(k), ib[s]["kpi"].get(k)
+
+    for k, (label, unit, lower) in info.items():
+        pairs = [values(k, s) for s in common]
         pairs = [(x, y) for x, y in pairs if x is not None and y is not None]
         if not pairs:
             continue
@@ -95,7 +121,7 @@ def compare(a: dict, b: dict, a_seeds: list, b_seeds: list, edge_limits: dict | 
             label=label, unit=unit, lower_is_better=lower, before=base, after=mean(y for _, y in pairs),
             diff=m, diff_ci_low=lo, diff_ci_high=hi, pct_change=(100 * m / base) if base else None,
             share_seeds_better=share, ties=ties, n=len(diffs), significant=excl, verdict=verdict,
-            pairs=[[s, ia[s]["kpi"].get(k), ib[s]["kpi"].get(k)] for s in common],
+            pairs=[[s, *values(k, s)] for s in common],
             confidence=_confidence(share if verdict == "better" else 1 - share - ties / len(diffs),
                                    excl, len(diffs)))
     ea, eb = _edge_means(a), _edge_means(b)
@@ -121,7 +147,7 @@ def _edge_means(results):
 
 def headline(cmp: dict) -> str:
     """One plain-language sentence for students and planners."""
-    k = cmp["kpis"].get("mean_travel_time_s")
+    k = cmp["kpis"].get("matched_travel_time_s") or cmp["kpis"].get("mean_travel_time_s")
     if not k:
         return "No comparable trips."
     n = k["n"]

@@ -79,5 +79,6 @@ export type KpiCmp = {
 export type EdgeCmp = { change: "better" | "worse" | "unchanged" | "new" | "removed"; delay_change_s?: number | null; speed_change_kmh?: number | null };
 export type Comparison = {
   headline: string; paired_seeds: number[]; kpis: Record<string, KpiCmp>; edges: Record<string, EdgeCmp>;
+  matched?: { trips: number; share: number };
   before?: { run: string; scenario: Scenario }; after?: { run: string; scenario: Scenario };
 };
