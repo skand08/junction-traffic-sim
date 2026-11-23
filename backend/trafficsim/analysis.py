@@ -15,12 +15,13 @@ KPI_INFO = {
     "mean_delay_s": ("Average delay per trip", "s", True),
     "mean_waiting_s": ("Average time stopped", "s", True),
     "mean_stops": ("Average stops per trip", "", True),
-    "completed_trips": ("Trips completed", "", False),
+    "completed_trips": ("Trips completed normally", "", False),
     "unfinished_trips": ("Trips not finished", "", True),
     "teleports": ("Gridlock removals (teleports)", "", True),
     "total_delay_veh_h": ("Total delay", "veh·h", True),
     # data-quality counts (reported, not used in the verdict)
-    "late_departures": ("Trips starting after the demand window (left out)", "", True),
+    "teleported_trips": ("Trips with a teleport (left out of travel time)", "", True),
+    "late_departures": ("Trips that entered after the demand hour (still counted)", "", True),
     "not_inserted": ("Trips that never entered the network", "", True),
     "removed": ("Vehicles removed by the simulator", "", True),
 }

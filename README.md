@@ -51,6 +51,17 @@ Comparisons use the same seeds for both options (common random numbers), so diff
 from the change, not from luck. A result is "consistent" when the proposal wins in at least 9 of
 10 runs and the 95% interval of the difference excludes zero.
 
+### How results are measured
+
+- A trip belongs to the demand hour if its **planned** start time falls in the hour. Cars that
+  queue before they can enter the network are still counted.
+- **Travel time and delay run from the planned start**, so time spent queuing to enter counts.
+  (Before measurement version 2 this time was invisible, and trips that could only enter after
+  the hour were silently dropped, which made congested options look better.)
+- Trips whose car **teleported** (stuck for 5 minutes and moved ahead by SUMO; read from SUMO's log)
+  are left out of travel time and counted separately. Unfinished and removed trips are counted
+  separately too. The results page shows all of these before the verdict.
+
 ## Settings
 
 | Variable | Default | Meaning |
@@ -65,8 +76,7 @@ Run the tests with `cd backend && pytest -q`.
 ## Known limitations (sprint 1 of the app)
 
 - Pressure-based control is experimental: on closely spaced, clustered junctions
-  (Ingolstadt21) it causes jams that the simulator clears by removing cars. The results panel
-  warns when this happens.
+  (Ingolstadt21) it causes jams and teleports. The results panel warns when this happens.
 - Changing lanes or banning a turn at a signal regenerates that signal's plan with default timings
   (the app shows a warning).
 - Adding a lane widens the whole road; the extra lane is reachable by lane changing.
