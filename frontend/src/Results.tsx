@@ -1,6 +1,15 @@
 import type { Comparison, KpiCmp, Run } from "./types";
 
-const ROWS = ["mean_travel_time_s", "mean_delay_s", "mean_stops", "completed_trips"];
+const ROWS_MATCHED = ["matched_travel_time_s", "matched_delay_s", "mean_travel_time_s", "mean_delay_s", "mean_stops", "completed_trips"];
+const ROWS_OLD = ["mean_travel_time_s", "mean_delay_s", "mean_stops", "completed_trips"];
+const ROW_LABEL: Record<string, string> = {
+  matched_travel_time_s: "Avg. travel time, same trips",
+  matched_delay_s: "Avg. delay, same trips",
+};
+const ROW_LABEL_SPLIT: Record<string, string> = {
+  mean_travel_time_s: "Avg. travel time, each option's own trips",
+  mean_delay_s: "Avg. delay, each option's own trips",
+};
 // Confidence here is about run-to-run variation only; data quality is reported separately.
 const CONF_TEXT = {
   high: "Consistent across runs",
@@ -9,12 +18,13 @@ const CONF_TEXT = {
 };
 
 /** Plain statement of the travel-time change, without a judgement word; built from the same KPI values. */
-function statement(k: KpiCmp) {
+function statement(k: KpiCmp, same: boolean) {
+  const tail = same ? " for the same trips in both options" : "";
   if (k.verdict === "no change" || Math.abs(k.diff) < 0.05) return "Average travel time did not change measurably.";
   const dir = k.diff < 0 ? "shorter" : "longer";
   if (Math.abs(k.diff) < 0.5) return `Average travel time changed by less than half a second per trip (${Math.abs(k.diff).toFixed(1)} s ${dir}).`;
   const pct = k.pct_change != null ? ` (${Math.abs(k.pct_change).toFixed(1)}%)` : "";
-  return `Average travel time is ${Math.abs(k.diff).toFixed(1)} s ${dir} per trip${pct}.`;
+  return `Average travel time is ${Math.abs(k.diff).toFixed(1)} s ${dir} per trip${pct}${tail}.`;
 }
 
 export function fmt(v: number | null | undefined, unit: string, signed = false) {
@@ -157,7 +167,10 @@ export function SeedStrip({ k }: { k: KpiCmp }) {
 }
 
 export default function Results({ cmp, before, after, labels }: { cmp: Comparison; before?: Run | null; after?: Run | null; labels?: { before: string; after: string } }) {
-  const tt = cmp.kpis["mean_travel_time_s"];
+  const same = !!cmp.kpis.matched_travel_time_s;
+  const tt = cmp.kpis.matched_travel_time_s ?? cmp.kpis.mean_travel_time_s;
+  const dl = cmp.kpis.matched_delay_s ?? cmp.kpis.mean_delay_s;
+  const ROWS = same ? ROWS_MATCHED : ROWS_OLD;
   const q = quality(cmp, before, after);
   const n = tt?.n ?? cmp.paired_seeds.length;
   const wins = tt ? Math.round((tt.verdict === "worse" ? 1 - tt.share_seeds_better - (tt.ties ?? 0) / n : tt.share_seeds_better) * n) : 0;
@@ -165,7 +178,13 @@ export default function Results({ cmp, before, after, labels }: { cmp: Compariso
     <section className="results" aria-live="polite">
       <QualityBanner q={q} n={n} labels={labels} />
 
-      <p className="headline">{tt ? statement(tt) : cmp.headline}</p>
+      <p className="headline">{tt ? statement(tt, same) : cmp.headline}</p>
+      {cmp.matched && (
+        <p className="small muted">
+          Compared on the {Math.round(cmp.matched.trips).toLocaleString()} trips per run that finished normally in both
+          options ({(100 * cmp.matched.share).toFixed(1)}% of all trips).
+        </p>
+      )}
       {tt && (
         <div className="verdict">
           {tt.verdict === "no change"
@@ -191,7 +210,7 @@ export default function Results({ cmp, before, after, labels }: { cmp: Compariso
             const k = cmp.kpis[r];
             return (
               <tr key={r}>
-                <th scope="row">{k.label.replace("Average ", "Avg. ")}</th>
+                <th scope="row">{(same && ROW_LABEL_SPLIT[r]) || ROW_LABEL[r] || k.label.replace("Average ", "Avg. ")}</th>
                 <td>{fmt(k.before, k.unit)}</td>
                 <td>{fmt(k.after, k.unit)}</td>
                 <td><Change k={k} /><span className="range-inline"><Range k={k} /></span></td>
@@ -205,12 +224,13 @@ export default function Results({ cmp, before, after, labels }: { cmp: Compariso
 
       <h4 className="sub">Variation across runs</h4>
       {tt && <SeedStrip k={tt} />}
-      {cmp.kpis.mean_delay_s && <SeedStrip k={cmp.kpis.mean_delay_s} />}
+      {dl && <SeedStrip k={dl} />}
 
       <details>
         <summary>How these numbers and the verdict are worked out</summary>
         <ul>
           <li><b>Travel time</b> runs from when a trip was planned to start to its arrival, so time spent queuing to enter the network counts. It covers trips planned within the demand hour that finished normally (no teleport).</li>
+          {same && <li><b>Same trips:</b> in each run, the verdict uses only trips that finished normally in both options. Trips cut off by a closure, teleported, unfinished or removed in either option are left out of both, so the options are compared like for like. The rows marked "each option's own trips" average all of that option's normal trips instead.</li>}
           <li><b>Delay</b> is the extra time compared with driving the same route on empty roads, mostly waiting at signals and in queues.</li>
           <li><b>Paired runs:</b> each option ran {n} times. Run 1 of both options used the same random seed, run 2 the next, and so on, so each pair differs only by your change. Seeds vary driver behaviour and departure order; the trips themselves are the same in every run.</li>
           <li><b>95% range</b> is a t-interval on the {n} paired differences: mean ± t × standard deviation ÷ √{n}. It describes run-to-run variation in this model only; it does not cover errors in the network, demand or signal data.</li>

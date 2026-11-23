@@ -146,3 +146,20 @@ def test_measurement_counts_queue_to_enter_and_flags_teleports(tmp_path):
     assert k["completed_trips"] == 2 and k["mean_travel_time_s"] == 200 and k["mean_delay_s"] == 120
     assert k["teleported_trips"] == 1 and k["unfinished_trips"] == 1 and k["late_departures"] == 1
     assert r["trips"]["c"][2] == runner.TELEPORTED and "e" not in r["trips"]
+
+
+def test_matched_trips_compare_like_for_like():
+    """Trips missing or not normal in either option are left out of both averages."""
+    from trafficsim import analysis
+
+    def seed(s, trips, kpi_tt):
+        return dict(seed=s, wall_s=1, edges={}, trips=trips,
+                    kpi=dict(mean_travel_time_s=kpi_tt, mean_delay_s=0, completed_trips=len(trips)))
+    a = [seed(1, {"x": [100, 10, 0], "y": [200, 20, 0], "z": [300, 30, 0]}, 200)]
+    # proposal: x faster, y teleported (status 1), z dropped by a closure (absent)
+    b = [seed(1, {"x": [90, 5, 0], "y": [50, 5, 1]}, 90)]
+    c = analysis.compare(a, b, [1], [1])
+    k = c["kpis"]["matched_travel_time_s"]
+    assert (k["before"], k["after"]) == (100, 90)          # only trip x is in both and normal
+    assert c["matched"]["trips"] == 1 and abs(c["matched"]["share"] - 1 / 3) < 1e-9
+    assert c["kpis"]["mean_travel_time_s"]["after"] == 90   # per-option average still reported
