@@ -139,6 +139,14 @@ function greenMovements(state: string, prog: SignalProgram): { road: string; tur
   return Object.entries(by).map(([road, t]) => ({ road, turns: [...t].sort((a, b) => TURN_ORDER[a] - TURN_ORDER[b]) }));
 }
 
+/** Text alternative for the per-movement marks, e.g. "4 green, 8 red". */
+function stateSummary(state: string) {
+  const n: Record<string, number> = {};
+  for (const ch of state) { const k = STATE_CLASS[ch] ?? "o"; n[k] = (n[k] ?? 0) + 1; }
+  const name: Record<string, string> = { g: "green", y: "amber", r: "red", o: "off" };
+  return "Movements: " + ["g", "y", "r", "o"].filter((k) => n[k]).map((k) => `${n[k]} ${name[k]}`).join(", ");
+}
+
 function phaseKind(state: string) {
   if (/[Gg]/.test(state)) return "green";
   if (/[yYu]/.test(state)) return "amber";
@@ -178,6 +186,12 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
         {prog.phases.length} phases, cycle {Math.round(cycle)} s (originally {Math.round(original.reduce((a, b) => a + b, 0))} s).
         Each row is one phase; the chips show who gets green.
       </p>
+      <p className="sig-key" aria-hidden="true">
+        <span><i className="g" />Green</span>
+        <span><i className="y" />Amber (striped)</span>
+        <span><i className="r" />Red (short)</span>
+        <span><i className="o" />Off</span>
+      </p>
       <div className="cycle-bar" aria-hidden="true">
         {durs.map((d, i) => <i key={i} className={phaseKind(prog.phases[i]?.state ?? "")} style={{ flexGrow: d }} />)}
       </div>
@@ -200,7 +214,7 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
                   {moves.map((m) => <span key={m.road} className="move">{m.road}: {m.turns.join(", ")}</span>)}
                 </span>
               )}
-              <span className="state" aria-hidden="true" title="One mark per lane movement: green, amber or red">
+              <span className="state" role="img" aria-label={stateSummary(p.state)} title="One mark per lane movement: green is a full bar, amber is striped, red is a short bar">
                 {[...p.state].map((ch, k) => <i key={k} className={STATE_CLASS[ch] ?? "o"} />)}
               </span>
             </span>

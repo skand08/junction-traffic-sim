@@ -132,9 +132,17 @@ select { padding: 4px 8px; border: 1px solid var(--asphalt); border-radius: var(
 
 .phases { list-style: none; padding: 0; margin: 8px 0 12px; display: grid; gap: 4px; }
 .phases li { display: flex; align-items: center; gap: 8px; }
-.state { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; }
-.state i { width: 7px; height: 14px; border-radius: 2px; display: block; }
-.state .g { background: #2e8b57; } .state .y { background: var(--amber); } .state .r { background: #c8463a; } .state .o { background: #c2cac6; }
+.state { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; align-items: flex-end; }
+.state i { width: 7px; height: 14px; border-radius: 2px; display: block; box-sizing: border-box; }
+/* Colour is never the only cue: green is a solid full bar, amber is striped, red is a short bar, off is an outline. */
+.state .g, .sig-key .g { background: #2e8b57; }
+.state .y, .sig-key .y { background: repeating-linear-gradient(135deg, var(--amber) 0 2px, #6b5200 2px 3.5px); }
+.state .r, .sig-key .r { background: #c8463a; height: 50%; }
+.state .o, .sig-key .o { background: transparent; border: 1px solid #8a948f; }
+.sig-key { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--asphalt-2); margin: 0 0 6px; }
+.sig-key span { display: inline-flex; align-items: flex-end; gap: 4px; }
+.sig-key i { display: block; width: 7px; height: 12px; border-radius: 2px; box-sizing: border-box; }
+.sig-key i.r { height: 6px; }
 .phases input { width: 62px; padding: 3px 6px; border: 1px solid var(--asphalt); border-radius: var(--radius-s); text-align: right; }
 .unit { font-size: var(--t-s); color: var(--asphalt-2); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -358,13 +366,16 @@ table.compact { font-size: var(--t-s); margin: 6px 0; }
 
 .cycle-bar { display: flex; height: 10px; border-radius: 2px; overflow: hidden; margin: 6px 0 10px; gap: 1px; }
 .cycle-bar i { display: block; min-width: 2px; }
-.cycle-bar i.green { background: #2e8b57; } .cycle-bar i.amber { background: var(--amber); } .cycle-bar i.red { background: #c8463a; }
+.cycle-bar i.green { background: #2e8b57; }
+.cycle-bar i.amber { background: repeating-linear-gradient(135deg, var(--amber) 0 3px, #6b5200 3px 5px); }
+.cycle-bar i.red { background: radial-gradient(circle, #fff 0.8px, transparent 1.2px) 0 0 / 4px 4px, #c8463a; }
 .phases li.phase { align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--mist); }
 .phase-text { display: grid; gap: 3px; flex: 1; min-width: 0; }
 .phase-name { font-weight: 700; font-size: var(--t-s); }
 .moves { display: flex; flex-wrap: wrap; gap: 4px; }
 .move { font-size: 12px; background: #e6f2eb; color: #1d5b3a; padding: 1px 7px; border-radius: 999px; }
 .phase .state i { width: 5px; height: 9px; }
+.phase .state i.r { height: 4.5px; }
 
 @media (max-width: 900px) {
   .panel { min-height: 60vh; }
@@ -509,3 +520,5 @@ table.summary td, table.summary th { vertical-align: middle; }
 .panel .seg.wide { margin: 10px 0 6px; }
 .panel input[type="file"] { margin: 6px 0 4px; font-size: var(--t-s); }
 .card .row select { min-width: 220px; }
+
+.legend .dir { font-size: 16px; line-height: 1; font-weight: 800; color: var(--asphalt); text-shadow: 0 0 2px #fff; margin-right: 4px; }

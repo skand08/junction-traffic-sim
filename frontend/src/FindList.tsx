@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import type { Selection } from "./MapView";
+import { listNav } from "./shared";
 
 export type Item = { kind: "edge" | "signal"; id: string; label: string; sub: string; changed?: boolean };
 
@@ -37,7 +38,10 @@ export default function FindList({ items, onPick, onHover, variant, selectedId, 
   };
 
   const list = (
-    <ul className={variant === "dropdown" ? "find-drop" : "find-list"} id={`${id}-list`} role="listbox" aria-label="Roads and signals">
+    <ul className={variant === "dropdown" ? "find-drop" : "find-list"} id={`${id}-list`} role="listbox" aria-label="Roads and signals" onKeyDown={(e) => {
+      if (e.key === "Escape") { setOpen(false); (e.currentTarget.parentElement?.querySelector("input") as HTMLInputElement | null)?.focus(); return; }
+      listNav(e);
+    }}>
       {found.map((it) => (
         <li key={`${it.kind}:${it.id}`} role="option" aria-selected={selectedId === it.id}>
           <button onMouseDown={(e) => e.preventDefault()} onClick={() => pick(it)}
@@ -62,7 +66,8 @@ export default function FindList({ items, onPick, onHover, variant, selectedId, 
         <input type="search" value={q} placeholder={placeholder ?? "Find a road or signal"}
           aria-label="Find a road or signal" aria-controls={`${id}-list`} aria-expanded={open && !!q}
           onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
-          onKeyDown={(e) => { if (e.key === "Enter" && found[0]) pick(found[0]); if (e.key === "Escape") setOpen(false); }} />
+          onKeyDown={(e) => { if (e.key === "Enter" && found[0]) pick(found[0]); if (e.key === "Escape") setOpen(false);
+            if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[id="${id}-list"] button`)?.focus()); } }} />
         {open && q && list}
       </div>
     );

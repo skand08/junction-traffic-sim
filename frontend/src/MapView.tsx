@@ -54,6 +54,35 @@ export function featureBBox(f: Feature): [number, number, number, number] {
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
+/** Chevrons along a road showing its travel direction: one at the middle, more on long roads.
+ *  Each chevron is two short strokes about 6 screen pixels long, so it reads at any zoom. */
+function chevrons(f: Feature, mPerPx: number): { path: [number, number][]; f: Feature }[] {
+  const pts = (f.geometry as any).coordinates as [number, number][];
+  if (pts.length < 2) return [];
+  const lat = pts[0][1] * Math.PI / 180;
+  const mx = 111320 * Math.cos(lat), my = 110540;           // metres per degree
+  const xy = pts.map(([x, y]) => [x * mx, y * my]);
+  const seg: number[] = [];
+  let total = 0;
+  for (let i = 1; i < xy.length; i++) { const d = Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]); seg.push(d); total += d; }
+  const arm = 6 * mPerPx;
+  if (total < arm * 4) return [];
+  const n = Math.max(1, Math.min(4, Math.floor(total / (260 * mPerPx))));
+  const out: { path: [number, number][]; f: Feature }[] = [];
+  for (let k = 0; k < n; k++) {
+    let at = total * (k + 0.62) / n, i = 0;   // a little past the middle, so the two sides of a street do not overlap
+    while (i < seg.length - 1 && at > seg[i]) { at -= seg[i]; i++; }
+    const t = seg[i] ? at / seg[i] : 0;
+    const [ax, ay] = xy[i], [bx, by] = xy[i + 1];
+    const ux = (bx - ax) / (seg[i] || 1), uy = (by - ay) / (seg[i] || 1);
+    const tip = [ax + (bx - ax) * t + ux * arm / 2, ay + (by - ay) * t + uy * arm / 2];
+    const back = (side: number) => [tip[0] - ux * arm - side * uy * arm * 0.8, tip[1] - uy * arm + side * ux * arm * 0.8];
+    const toLL = ([x, y]: number[]) => [x / mx, y / my] as [number, number];
+    out.push({ path: [toLL(back(1)), toLL(tip), toLL(back(-1))], f });
+  }
+  return out;
+}
+
 type View = { longitude: number; latitude: number; zoom: number; pitch?: number; bearing?: number };
 
 type Props = {
@@ -95,6 +124,14 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
   const edges = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "edge"), [geometry]);
   const signals = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "signal"), [geometry]);
   const closedEdges = useMemo(() => edges.filter((f) => !(f.properties as EdgeProps).car_allowed), [edges]);
+  const showArrows = view.zoom >= 15.5;
+  const zStep = Math.round(view.zoom * 2) / 2;            // rebuild arrows every half zoom level
+  const arrows = useMemo(() => {
+    if (!showArrows || !edges.length) return [];
+    const lat = ((edges[0].geometry as any).coordinates[0][1] * Math.PI) / 180;
+    const mPerPx = (78271.52 * Math.cos(lat)) / 2 ** zStep;   // metres per screen pixel (512-px tiles)
+    return edges.filter((f) => (f.properties as EdgeProps).car_allowed).flatMap((f) => chevrons(f, mPerPx));
+  }, [edges, zStep, showArrows]);
 
   const fit = (bbox: [number, number, number, number], maxZoom = 19) => {
     const el = box.current;
@@ -152,6 +189,15 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       widthUnits: "meters", widthMinPixels: 2, capRounded: true, jointRounded: true,
       updateTriggers: { getColor: [mode, runEdges, cmpEdges, edited] },
       onClick: (info) => info.object && onSelect({ kind: "edge", id: info.object.properties.id }),
+    }),
+    // travel direction, shown once zoomed in: dark chevrons with a light outline read on any road colour
+    new PathLayer<{ path: [number, number][]; f: Feature }>({
+      id: "direction-halo", data: arrows, visible: showArrows, getPath: (a) => a.path,
+      getColor: [250, 251, 249, 235], getWidth: 4.5, widthUnits: "pixels", capRounded: true, jointRounded: true,
+    }),
+    new PathLayer<{ path: [number, number][]; f: Feature }>({
+      id: "direction", data: arrows, visible: showArrows, getPath: (a) => a.path,
+      getColor: [38, 43, 48, 255], getWidth: 2, widthUnits: "pixels", capRounded: true, jointRounded: true,
     }),
     // closed roads: ink outline with a light core, so they read as a hollow double line
     new PathLayer<Feature>({

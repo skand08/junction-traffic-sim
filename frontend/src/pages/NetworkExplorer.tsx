@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
 import FindList, { type Item } from "../FindList";
-import { Legend } from "../shared";
+import { Legend, listNav } from "../shared";
 import type { EdgeProps, Geometry, Network, SignalProgram, SignalProps } from "../types";
 
 type Props = {
@@ -115,7 +115,7 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
                 <button className="btn secondary small" onClick={() => setAdding("area")}>Add network</button>
               </div>
               <p className="lead">Your road networks. Add one from OpenStreetMap or a SUMO file, then build scenarios on it.</p>
-              <div className="nets" role="listbox" aria-label="Networks">
+              <div className="nets" role="listbox" aria-label="Networks" onKeyDown={listNav}>
                 {networks.map((n) => (
                   <button key={n.id} role="option" aria-selected={n.id === selected} className="net" onClick={() => onSelect(n.id)}>
                     <span className="net-name">{n.name}{n.kind === "imported" && <span className="chip">imported</span>}</span>
@@ -254,7 +254,7 @@ function AddNetwork({ mode, setMode, bounds, onFocus, onDone, fail }: {
           </div>
           {placeErr && <p className="small muted">{placeErr}</p>}
           {places && (
-            <ul className="places">
+            <ul className="places" onKeyDown={listNav}>
               {places.length === 0 && <li className="small muted">No place found.</li>}
               {places.map((p, i) => (
                 <li key={i}><button className="link" onClick={() => {
