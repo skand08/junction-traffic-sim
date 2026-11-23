@@ -205,16 +205,16 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
               </span>
             </span>
             <input
-              type="number" min={1} max={180} value={durs[i] ?? p.duration} disabled={busy}
+              type="number" min={1} max={180} step={0.5} value={durs[i] ?? p.duration} disabled={busy}
               aria-label={`Phase ${i + 1} duration in seconds`}
-              onChange={(e) => setDurs(durs.map((d, k) => (k === i ? Math.max(1, Number(e.target.value) || 1) : d)))}
+              onChange={(e) => setDurs(durs.map((d, k) => (k === i ? Math.max(1, Math.round((Number(e.target.value) || 1) * 10) / 10) : d)))}
             />
             <span className="unit">s</span>
           </li>
           );
         })}
       </ol>
-      <p className="small muted">Times are whole seconds. Signals are not coordinated with each other.</p>
+      <p className="small muted">Times are in seconds (0.1 s steps). The signal keeps its original offset to its neighbours.</p>
       <div className="row">
         <button className="primary" disabled={busy || !dirty} onClick={apply}>Apply timing</button>
         {(edit || dirty) && (
