@@ -463,3 +463,5 @@ table.compact { font-size: var(--t-s); margin: 6px 0; }
   .side-item { position: relative; }
 }
 @media (max-width: 900px) { .no-map .stage { display: none; } }
+.field-check { align-items: flex-start; margin: 4px 0 16px; font-size: var(--t-s); }
+.field-check input { margin-top: 2px; }

@@ -81,6 +81,8 @@ export default function App() {
   const [delaySide, setDelaySide] = useState<Side>("prop");
   const [repeats, setRepeats] = useState(10);
   const [firstSeed, setFirstSeed] = useState(1);
+  const [jitter, setJitter] = useState(300);          // ± seconds of start-time variation between runs
+  const [jitterOverride, setJitterOverride] = useState<number | null>(null);
   const [jobs, setJobs] = useState<Partial<Record<Side, Job>>>({});
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [runs, setRuns] = useState<Partial<Record<Side, Run>>>({});
@@ -136,7 +138,7 @@ export default function App() {
     writeHash({});
     setNetId(null); setBase(null); setProp(null); setBaseGeo(null); setPropGeo(null); setSignals(null);
     setSelection(null); setWarnings([]); setJobs({}); setRuns({}); setCmp(null); setStale(false); setMode("layout");
-    setLabels(DEFAULT_LABELS); setSeedOverride(null); setExpected(null); setLost(false); setError(null); setPendingNet(null);
+    setLabels(DEFAULT_LABELS); setSeedOverride(null); setExpected(null); setJitterOverride(null); setLost(false); setError(null); setPendingNet(null);
     setShowNets(true); setSection(to);
   }
 
@@ -187,7 +189,7 @@ export default function App() {
     setPendingNet(null); setLoadingNet(true); setError(null); setLost(false); setNetId(id); setSelection(null); setWarnings([]);
     setJobs({}); setRuns({}); setCmp(null); setStale(false); setMode("layout"); setBaseGeo(null); setPropGeo(null);
     setLabels(DEFAULT_LABELS);
-    if (!keepSeeds) { setSeedOverride(null); setExpected(null); }
+    if (!keepSeeds) { setSeedOverride(null); setExpected(null); setJitterOverride(null); }
     try {
       const b = await api.createScenario(id, "Current situation");
       let p = await api.copyScenario(b.id, "Proposal");
@@ -228,10 +230,11 @@ export default function App() {
 
   // ---------- runs ----------
   const seedList = seedOverride ?? Array.from({ length: repeats }, (_, i) => firstSeed + i);
-  async function startJobs(b: Scenario, p: Scenario, seeds: number[]) {
+  const jitterNow = jitterOverride ?? jitter;
+  async function startJobs(b: Scenario, p: Scenario, seeds: number[], jit = jitterNow) {
     setError(null); setCmp(null); setRuns({}); setStale(false); setLabels(DEFAULT_LABELS);
     try {
-      const [jb, jp] = await Promise.all([api.startRun(b.id, seeds), api.startRun(p.id, seeds)]);
+      const [jb, jp] = await Promise.all([api.startRun(b.id, seeds, jit), api.startRun(p.id, seeds, jit)]);
       setJobs({ base: jb, prop: jp }); setStartedAt(Date.now()); setSection("simulation");
       writeHash({ b: b.id, p: p.id, jb: jb.id, jp: jp.id });
     } catch (e: any) { fail(e); }
@@ -307,11 +310,12 @@ export default function App() {
     const s = bundle.scenario;
     if (!s?.base_network) throw new Error("This file is not a saved experiment.");
     const seeds = bundle.experiment?.seeds ?? bundle.run?.seeds ?? null;
-    setSeedOverride(seeds);
+    const jit = bundle.experiment ? bundle.experiment.depart_jitter_s ?? 0 : null;
+    setSeedOverride(seeds); setJitterOverride(jit);
     setExpected(bundle.experiment ? { values: bundle.experiment.values, versions: bundle.experiment.versions, source: `${bundle.experiment.before_run} / ${bundle.experiment.after_run}` } : null);
     const ids = await chooseNetwork(s.base_network, s, true);
     if (!ids) return;
-    if (autoRun && seeds) await startJobs(ids.b, ids.p, seeds);
+    if (autoRun && seeds) await startJobs(ids.b, ids.p, seeds, jit ?? jitter);
     else setSection("simulation");
   }
   async function reproduce(e: Experiment) {
@@ -650,7 +654,7 @@ export default function App() {
                   {seedOverride && (
                     <div className="banner-inline warn">
                       Using the saved experiment's {seedOverride.length} runs{expected ? "; results will be checked against it" : ""}.{" "}
-                      <button className="btn quiet small" disabled={running} onClick={() => { setSeedOverride(null); setExpected(null); }}>Use my own settings</button>
+                      <button className="btn quiet small" disabled={running} onClick={() => { setSeedOverride(null); setExpected(null); setJitterOverride(null); }}>Use my own settings</button>
                     </div>
                   )}
                   <fieldset className="field block" disabled={running || !!seedOverride}>
@@ -663,6 +667,12 @@ export default function App() {
                     <p className="small muted">Traffic is random, so each option runs several times. More runs: more reliable, but slower.</p>
                   </fieldset>
 
+                  <label className="check field-check">
+                    <input type="checkbox" checked={jitterNow > 0} disabled={running || jitterOverride != null}
+                      onChange={(e) => setJitter(e.target.checked ? 300 : 0)} />
+                    <span><b>Vary when trips start</b> (up to ±{Math.round((jitterNow || 300) / 60)} min per run). Each run then has a slightly different traffic pattern, like different days. Both options get the same pattern in each run.</span>
+                  </label>
+
                   <details className="advanced">
                     <summary>Advanced settings</summary>
                     <label className="field">
@@ -671,6 +681,11 @@ export default function App() {
                         onChange={(e) => setFirstSeed(Math.max(1, Math.floor(Number(e.target.value) || 1)))} />
                     </label>
                     <p className="small muted">Seeds {seedList[0]} to {seedList[seedList.length - 1]}. Same seeds give the same results.</p>
+                    <label className="field">
+                      <span className="label">Start-time variation (± seconds)</span>
+                      <input type="number" min={0} max={1800} step={30} value={jitterNow} disabled={running || jitterOverride != null}
+                        onChange={(e) => setJitter(Math.max(0, Math.min(1800, Math.round(Number(e.target.value) || 0))))} />
+                    </label>
                     {health && (
                       <dl className="facts">
                         <dt>Stuck car is moved ahead after</dt><dd>{health.settings.time_to_teleport_s} s</dd>
@@ -875,6 +890,7 @@ function RunFacts({ runs, cmp }: { runs: Partial<Record<Side, Run>>; cmp: Compar
         <dt>Seeds</dt><dd>{seeds.length > 6 ? `${seeds[0]} to ${seeds[seeds.length - 1]} (${seeds.length} runs)` : seeds.join(", ")}</dd>
         <dt>Signal control</dt><dd>current: {runs.base?.scenario.controller}, proposal: {runs.prop?.scenario.controller}</dd>
         <dt>Traffic level</dt><dd>{Math.round(r.scenario.demand_scale * 100)}%</dd>
+        <dt>Start-time variation</dt><dd>{r.depart_jitter_s ? `±${r.depart_jitter_s} s per run` : "off"}</dd>
         <dt>Changes</dt><dd>{runs.prop?.scenario.edits.length ?? 0}</dd>
         <dt>Versions</dt><dd>{r.versions ? `Junction ${r.versions.app}, SUMO ${r.versions.sumo}` : "not recorded (older run)"}</dd>
         <dt>Run ids</dt><dd className="mono">{runs.base?.id} / {runs.prop?.id}</dd>

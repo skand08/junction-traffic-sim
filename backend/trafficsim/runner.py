@@ -11,6 +11,7 @@ Runs in a worker process. Fixed-time and actuated control are native SUMO progra
 max-pressure is applied live through libsumo.
 """
 import os
+import random
 import re
 import subprocess
 import time
@@ -28,6 +29,40 @@ MP_AMBER = 3        # s amber for movements losing green
 MP_ALL_RED = 2      # s all-red clearance
 
 
+def _demand_for_seed(job: dict, out: Path) -> str:
+    """Route file for this seed. With depart_jitter_s > 0, every trip's start time is shifted by a
+    uniform random amount in [-J, +J] (seeded by the run seed, kept inside the demand hour), so seeds
+    vary the traffic itself and not only driver behaviour. Both options of a comparison get the same
+    shifts for the same seed, so they stay paired."""
+    j = float(job.get("depart_jitter_s") or 0)
+    if j <= 0:
+        return job["demand_file"]
+    tree = ET.parse(job["demand_file"])
+    root = tree.getroot()
+    rng = random.Random(f"depart-{job['seed']}")
+    timed, other = [], []
+    for el in list(root):
+        dep = el.get("depart")
+        try:
+            t = float(dep)
+        except (TypeError, ValueError):
+            other.append(el)
+            continue
+        t = min(max(t + rng.uniform(-j, j), job["begin"]), job["end"])
+        el.set("depart", f"{t:.2f}")
+        timed.append((t, el))
+        root.remove(el)
+    for el in other:
+        root.remove(el)
+    for el in other:                       # vTypes, routes, flows first
+        root.append(el)
+    for _, el in sorted(timed, key=lambda x: x[0]):   # SUMO needs departures in time order
+        root.append(el)
+    f = out / "demand.rou.xml"
+    tree.write(f)
+    return str(f)
+
+
 def _common_args(job: dict, out: Path) -> list:
     end = job["end"] + config.DRAIN_S
     edge_add = out / "edgedata.add.xml"
@@ -35,7 +70,7 @@ def _common_args(job: dict, out: Path) -> list:
         f'<additional><edgeData id="run" file="{out / "edges.xml"}" begin="{job["begin"]}" '
         f'end="{end}" excludeEmpty="true" withInternal="false"/></additional>\n')
     adds = [str(edge_add)] + ([job["tls_additional"]] if job.get("tls_additional") else [])
-    return ["-n", job["net_file"], "-r", job["demand_file"], "-a", ",".join(adds),
+    return ["-n", job["net_file"], "-r", _demand_for_seed(job, out), "-a", ",".join(adds),
             "--begin", str(job["begin"]), "--end", str(end),
             "--scale", str(job["scale"]), "--seed", str(job["seed"]),
             "--step-length", str(config.STEP_LENGTH),
@@ -221,7 +256,7 @@ def run_seed(job: dict) -> dict:
         _run_native(job, out)
     res = _parse(job, out)
     res.update(seed=job["seed"], wall_s=round(time.perf_counter() - t0, 2))
-    for f in ("tripinfo.xml", "sumo.log"):          # large; keep edges.xml and stats.xml
+    for f in ("tripinfo.xml", "sumo.log", "demand.rou.xml"):          # large; keep edges.xml and stats.xml
         try:
             os.remove(out / f)
         except OSError:
