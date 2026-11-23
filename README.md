@@ -34,6 +34,17 @@ For frontend development with hot reload, run `npm run dev` in `frontend/`
 
 Synthetic networks are generated on first use. Ingolstadt networks need step 2.
 
+## Using the app
+
+| Section | What it is for |
+| --- | --- |
+| Overview | Counts, recent simulations and where to start. |
+| Network Explorer | The network library. Browse roads and signals, or **add a network**: an area of the map downloaded from OpenStreetMap (Overpass API, up to 6 km²), an uploaded `.osm` file, or a SUMO `.net.xml` (or a `.zip` with a `.net.xml` and a `.rou.xml`). OpenStreetMap has no traffic counts, so imported networks get random traffic from SUMO's randomTrips (about 150 trips per km of road per hour unless you set a number). |
+| Scenario Builder | A library of named scenarios. Each is one version of a network: lane, speed, closure and turn changes, signal timings, signal control and amount of traffic. Every network has an "As it is" scenario with no changes. |
+| Traffic Simulation | Pick a reference (usually "As it is") and one or more scenarios to test; they run together with the same seeds in the background. |
+| Results & Analytics | A summary of every tested scenario against the reference, then data quality, the change with its 95% range, variation across runs and the roads that changed most. |
+| Experiments & History | All simulations: open, run again (the same scenario versions and seeds, with a reproduction check), remove, or compare any two runs. |
+
 ## How it works
 
 | Part | What it does |
@@ -41,6 +52,8 @@ Synthetic networks are generated on first use. Ingolstadt networks need step 2.
 | `backend/trafficsim/catalog.py` | Base networks: synthetic grid and corridor (netgenerate + randomTrips), RESCO Ingolstadt 7 and 21 |
 | `scenario.py` | Scenario model (base network, edits, demand scale, controller) and export/import bundles |
 | `build.py` | Applies edits as netconvert plain-XML patches; signal timing and controller via an additional file; checks that trips can still reach their destinations |
+| `importer.py` | Adds networks from OpenStreetMap (file or Overpass area) or SUMO files; generates random traffic when there is none |
+| `simulations.py` | Stored simulations: one reference and several alternatives, run with the same seeds |
 | `runner.py` | Runs one seed: fixed and actuated control natively in SUMO, pressure-based control through libsumo; extracts KPIs and per-road statistics |
 | `jobs.py` | Background jobs: seeds in parallel worker processes, with progress |
 | `analysis.py` | Means with 95% confidence intervals; paired before/after comparison by seed; plain-language headline |

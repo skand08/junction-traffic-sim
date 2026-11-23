@@ -60,6 +60,8 @@ class Scenario(BaseModel):
     controller: Literal["fixed", "actuated", "max_pressure"] = "fixed"
     edits: List[Edit] = Field(default_factory=list)
     parent_id: Optional[str] = None      # scenario this one was copied from (for before/after)
+    description: str = ""
+    baseline: bool = False               # the network as it is: no edits, fixed timing; one per network
     created: float = Field(default_factory=time.time)
 
     def network_key(self) -> str:

@@ -105,7 +105,7 @@ button, input, select { font: inherit; color: inherit; }
   padding: 9px 12px; cursor: pointer; display: grid; gap: 2px;
 }
 .net:hover:not(:disabled) { border-color: var(--asphalt-2); }
-.net[aria-checked="true"] { border-color: var(--sign); box-shadow: inset 4px 0 0 var(--sign); }
+.net[aria-checked="true"], .net[aria-selected="true"] { border-color: var(--sign); box-shadow: inset 4px 0 0 var(--sign); }
 .net:disabled { opacity: .6; cursor: default; }
 .net-name { font-weight: 600; }
 .net-desc { font-size: var(--t-s); color: var(--asphalt-2); }
@@ -465,3 +465,47 @@ table.compact { font-size: var(--t-s); margin: 6px 0; }
 @media (max-width: 900px) { .no-map .stage { display: none; } }
 .field-check { align-items: flex-start; margin: 4px 0 16px; font-size: var(--t-s); }
 .field-check input { margin-top: 2px; }
+
+/* ---- Feature workspaces ---- */
+.content { min-height: 0; display: flex; flex-direction: column; position: relative; }
+.content > main { flex: 1; min-height: 0; }
+.banner.toast { position: absolute; top: 12px; right: 16px; z-index: 30; max-width: 460px; box-shadow: 0 6px 18px rgba(38,43,48,.2); }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+.tile { text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 16px 18px; cursor: pointer; display: grid; gap: 4px; }
+.tile:hover { border-color: var(--asphalt-2); }
+.tile-num { font-size: var(--t-xl); font-weight: 800; color: var(--sign); line-height: 1; }
+.tile-name { font-weight: 800; font-size: var(--t-m); }
+input.text, textarea.text, .page select, .panel select {
+  padding: 7px 10px; border: 1px solid var(--asphalt); border-radius: var(--radius-s); background: var(--paper); font-size: var(--t-b); }
+input.text, textarea.text { width: 100%; }
+textarea.text { resize: vertical; margin: 6px 0 10px; font-family: inherit; }
+.field.block select { width: 100%; }
+.grow { flex: 1; min-width: 0; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input[type="search"] { padding: 7px 10px; border: 1px solid var(--asphalt); border-radius: var(--radius-s); background: var(--paper); }
+.title-input { width: 100%; font-size: var(--t-l); font-weight: 800; border: 1px solid transparent; border-radius: var(--radius-s); padding: 4px 6px; margin: 4px 0 0 -6px; background: transparent; }
+.title-input:hover:not(:disabled), .title-input:focus { border-color: var(--line); background: var(--paper); }
+.title-input:disabled { color: var(--asphalt); }
+.h2-inline { font-size: var(--t-m); margin: 22px 0 10px; }
+.h3-flat { margin: 0; font-size: var(--t-b); }
+.page-head.row { align-items: flex-start; }
+.scen-group h3 { font-size: var(--t-b); margin: 18px 0 6px; color: var(--asphalt-2); }
+.scen-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.scen-list li { display: flex; align-items: center; gap: 10px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 4px 12px 4px 4px; }
+.scen-item { flex: 1; text-align: left; border: 0; background: none; padding: 8px; cursor: pointer; display: grid; gap: 2px; border-radius: var(--radius-s); }
+.scen-item:hover { background: var(--mist); }
+.scen-name { font-weight: 800; }
+.check-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.check-list .check { align-items: flex-start; }
+.check-list input { margin-top: 3px; }
+table.summary { font-size: var(--t-s); margin: 10px 0; }
+table.summary tbody tr { cursor: pointer; }
+table.summary tbody tr:hover, table.summary tr.picked { background: #fdf6dc; }
+table.summary td, table.summary th { vertical-align: middle; }
+.pill.dq-good, .pill.dq-caution, .pill.dq-unreliable { text-transform: capitalize; }
+.area-frame { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 4px var(--amber); z-index: 2; }
+.places { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; font-size: var(--t-s); }
+.warn-text { color: var(--warn-ink); font-weight: 700; }
+.panel .seg.wide { margin: 10px 0 6px; }
+.panel input[type="file"] { margin: 6px 0 4px; font-size: var(--t-s); }
+.card .row select { min-width: 220px; }

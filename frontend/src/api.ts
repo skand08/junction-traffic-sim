@@ -1,4 +1,4 @@
-import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram } from "./types";
+import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation } from "./types";
 
 const BASE = (import.meta as any).env?.VITE_API ?? "/api";
 
@@ -25,8 +25,41 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
+async function upload<T>(path: string, file: File): Promise<T> {
+  const r = await fetch(BASE + path, { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" } });
+  if (!r.ok) {
+    let msg = `Upload failed (${r.status})`;
+    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* keep */ }
+    throw new ApiError(msg, r.status);
+  }
+  return r.json();
+}
+
 export const api = {
   health: () => req<Health>("/health"),
+  // network library
+  networkGeometry: (nid: string) => req<Geometry>(`/networks/${nid}/geometry`),
+  networkSignals: (nid: string) => req<Record<string, SignalProgram>>(`/networks/${nid}/signals`),
+  baseline: (nid: string) => req<Scenario>(`/networks/${nid}/baseline`, { method: "POST" }),
+  importOsmFile: (file: File, name: string, trips?: number) =>
+    upload<Network>(`/networks/import/osm?name=${encodeURIComponent(name)}${trips ? `&trips=${trips}` : ""}`, file),
+  importOsmArea: (bbox: number[], name: string, trips?: number) =>
+    req<Network>("/networks/import/osm-area", { method: "POST", body: JSON.stringify({ bbox, name, trips: trips || null }) }),
+  importSumo: (file: File, name: string, trips?: number) =>
+    upload<Network>(`/networks/import/sumo?name=${encodeURIComponent(name)}${trips ? `&trips=${trips}` : ""}`, file),
+  deleteNetwork: (nid: string) => req<{ ok: boolean }>(`/networks/${nid}`, { method: "DELETE" }),
+  // scenarios
+  createScenarioFull: (base_network: string, name: string) =>
+    req<Scenario>("/scenarios", { method: "POST", body: JSON.stringify({ base_network, name }) }),
+  deleteScenario: (id: string) => req<{ ok: boolean }>(`/scenarios/${id}`, { method: "DELETE" }),
+  // simulations
+  simulations: (network?: string) => req<Simulation[]>(`/simulations${network ? `?network=${network}` : ""}`),
+  simulation: (id: string) => req<Simulation>(`/simulations/${id}`),
+  startSimulation: (body: { reference: string; alternatives: string[]; seeds: number[]; depart_jitter_s: number; name?: string }) =>
+    req<Simulation>("/simulations", { method: "POST", body: JSON.stringify(body) }),
+  cancelSimulation: (id: string) => req<Simulation>(`/simulations/${id}/cancel`, { method: "POST" }),
+  rerunSimulation: (id: string) => req<Simulation>(`/simulations/${id}/rerun`, { method: "POST" }),
+  deleteSimulation: (id: string) => req<{ ok: boolean }>(`/simulations/${id}`, { method: "DELETE" }),
   networks: () => req<Network[]>("/networks"),
   scenario: (id: string) => req<{ scenario: Scenario; warnings: string[] }>(`/scenarios/${id}`),
   scenarios: () => req<Scenario[]>("/scenarios"),
@@ -36,7 +69,7 @@ export const api = {
     req<Scenario>("/scenarios", { method: "POST", body: JSON.stringify({ base_network, name }) }),
   copyScenario: (id: string, name: string) =>
     req<Scenario>(`/scenarios/${id}/copy?name=${encodeURIComponent(name)}`, { method: "POST" }),
-  updateScenario: (id: string, body: Partial<{ name: string; demand_scale: number; controller: string; edits: Edit[] }>) =>
+  updateScenario: (id: string, body: Partial<{ name: string; description: string; demand_scale: number; controller: string; edits: Edit[] }>) =>
     req<{ scenario: Scenario; warnings: string[] }>(`/scenarios/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   geometry: (id: string) => req<Geometry>(`/scenarios/${id}/geometry`),
   signals: (id: string) => req<Record<string, SignalProgram>>(`/scenarios/${id}/signals`),
