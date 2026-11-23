@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# Data: networks and runs are generated or downloaded (see README); RESCO data is CC BY-NC-SA
+backend/data/
+# Frontend
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
