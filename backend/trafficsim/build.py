@@ -160,12 +160,18 @@ def _check_routes(net_file: Path, demand_file: Path) -> tuple[int, int]:
     return bad, total
 
 
+def _num(x: float) -> str:
+    """Seconds to 0.1 s, without trailing zeros (durations were rounded to whole seconds before)."""
+    return f"{round(float(x), 1):g}"
+
+
 def _tls_additional(s: Scenario, net_file: Path, out_dir: Path, warnings: List[str]) -> Path | None:
     net = sumolib.net.readNet(str(net_file), withPrograms=True)
-    progs = {}
+    progs, offsets = {}, {}
     for t in net.getTrafficLights():
         pid, prog = next(iter(t.getPrograms().items()))
         progs[t.getID()] = [(p.duration, p.state) for p in prog.getPhases()]
+        offsets[t.getID()] = float(getattr(prog, "_offset", 0) or 0)   # keep coordination between signals
     retimes = {e.tls: e.durations for e in s.edits if e.type == "retime_signal"}
     for tid, durs in list(retimes.items()):
         if tid not in progs:
@@ -185,14 +191,14 @@ def _tls_additional(s: Scenario, net_file: Path, out_dir: Path, warnings: List[s
             continue
         durs = retimes.get(tid, [d for d, _ in phases])
         kind = "actuated" if s.controller == "actuated" else "static"
-        lines.append(f'  <tlLogic id={quoteattr(tid)} type="{kind}" programID="scenario" offset="0">')
+        lines.append(f'  <tlLogic id={quoteattr(tid)} type="{kind}" programID="scenario" offset="{_num(offsets[tid])}">')
         for d, (_, st) in zip(durs, phases):
             d = max(1.0, float(d))
             if kind == "actuated" and _green(st):
-                lines.append(f'    <phase duration="{d:.0f}" minDur="{max(5, round(0.3 * d)):.0f}" '
-                             f'maxDur="{max(2 * d, d + 20):.0f}" state="{st}"/>')
+                lines.append(f'    <phase duration="{_num(d)}" minDur="{_num(max(5, 0.3 * d))}" '
+                             f'maxDur="{_num(max(2 * d, d + 20))}" state="{st}"/>')
             else:
-                lines.append(f'    <phase duration="{d:.0f}" state="{st}"/>')
+                lines.append(f'    <phase duration="{_num(d)}" state="{st}"/>')
         lines.append("  </tlLogic>")
     lines.append("</additional>")
     out_dir.mkdir(parents=True, exist_ok=True)

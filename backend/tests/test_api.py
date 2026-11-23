@@ -199,3 +199,16 @@ def test_run_records_depart_jitter():
     wait(j2["id"])
     r2 = c.get(f"/api/runs/{j2['id']}").json()
     assert r2["aggregate"]["kpis"]["mean_travel_time_s"]["values"] == r["aggregate"]["kpis"]["mean_travel_time_s"]["values"]
+def test_retime_keeps_decimals_and_offset(tmp_path):
+    from trafficsim import build
+    assert build._num(31.5) == "31.5" and build._num(30.0) == "30" and build._num(12.345) == "12.3"
+    base = c.post("/api/scenarios", json=dict(base_network="grid3x3", name="Base")).json()
+    progs = c.get(f"/api/scenarios/{base['id']}/signals").json()
+    tid, prog = next(iter(progs.items()))
+    durs = [p["duration"] + 0.5 for p in prog["phases"]]
+    r = c.put(f"/api/scenarios/{base['id']}", json=dict(edits=[dict(type="retime_signal", tls=tid, durations=durs)]))
+    assert r.status_code == 200
+    from trafficsim import scenario as sc
+    b = build.build(sc.load(base["id"]), tmp_path)
+    xml = b.tls_additional.read_text()
+    assert f'duration="{build._num(durs[0])}"' in xml and 'offset="0"' in xml
