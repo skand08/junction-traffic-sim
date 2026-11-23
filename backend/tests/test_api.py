@@ -212,3 +212,81 @@ def test_retime_keeps_decimals_and_offset(tmp_path):
     b = build.build(sc.load(base["id"]), tmp_path)
     xml = b.tls_additional.read_text()
     assert f'duration="{build._num(durs[0])}"' in xml and 'offset="0"' in xml
+
+
+DATA = os.path.join(os.path.dirname(__file__), "data")
+
+
+def test_network_library_import_scenarios_and_simulation():
+    # import an OpenStreetMap file into the library
+    body = open(os.path.join(DATA, "west-oakland.osm.bz2"), "rb").read()
+    r = c.post("/api/networks/import/osm?name=West%20Oakland&trips=300", content=body)
+    assert r.status_code == 200, r.text
+    net = r.json()
+    assert net["kind"] == "imported" and net["edges"] > 10 and net["trips"] == 300 and net["geo"]
+    assert any(n["id"] == net["id"] for n in c.get("/api/networks").json())
+    g = c.get(f"/api/networks/{net['id']}/geometry").json()
+    named = [f["properties"]["name"] for f in g["features"] if f["properties"]["kind"] == "edge" and f["properties"]["name"]]
+    assert named, "OSM street names should be kept"
+
+    # the baseline scenario is created once and reused
+    b1 = c.post(f"/api/networks/{net['id']}/baseline").json()
+    b2 = c.post(f"/api/networks/{net['id']}/baseline").json()
+    assert b1["id"] == b2["id"] and b1["baseline"] and b1["edits"] == []
+
+    # two alternatives, simulated together against the baseline with the same seeds
+    alt1 = c.post(f"/api/scenarios/{b1['id']}/copy?name=Actuated").json()
+    assert alt1["baseline"] is False and alt1["description"] == "" and alt1["parent_id"] == b1["id"]
+    c.put(f"/api/scenarios/{alt1['id']}", json=dict(controller="actuated", description="Actuated signals"))
+    alt2 = c.post(f"/api/scenarios/{b1['id']}/copy?name=Busier").json()
+    c.put(f"/api/scenarios/{alt2['id']}", json=dict(demand_scale=1.2))
+    sim = c.post("/api/simulations", json=dict(reference=b1["id"], alternatives=[alt1["id"], alt2["id"]],
+                                               seeds=2, depart_jitter_s=60)).json()
+    assert len(sim["alternatives"]) == 2 and sim["network"] == net["id"]
+    for _ in range(600):
+        st = c.get(f"/api/simulations/{sim['id']}").json()
+        if st["state"] != "running":
+            break
+        time.sleep(0.5)
+    assert st["state"] == "done", st
+    cmp = c.get(f"/api/compare?before={st['reference']['run_id']}&after={st['alternatives'][1]['run_id']}").json()
+    assert cmp["kpis"]["matched_travel_time_s"]["n"] == 2
+    assert any(s["id"] == sim["id"] for s in c.get(f"/api/simulations?network={net['id']}").json())
+
+    # mixing networks is refused; imported networks can be deleted, built-in ones cannot
+    other = c.post("/api/scenarios", json=dict(base_network="grid3x3", name="x")).json()
+    assert c.post("/api/simulations", json=dict(reference=b1["id"], alternatives=[other["id"]], seeds=1)).status_code == 422
+    assert c.delete("/api/networks/grid3x3").status_code == 422
+    assert c.delete(f"/api/networks/{net['id']}").status_code == 200
+    assert not any(n["id"] == net["id"] for n in c.get("/api/networks").json())
+
+
+def test_sumo_network_upload():
+    from trafficsim import catalog
+    grid = catalog.ensure_network("grid3x3") / "net.net.xml"
+    r = c.post("/api/networks/import/sumo?name=My%20grid&trips=200", content=grid.read_bytes())
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["edges"] == 48 and m["trips"] == 200 and m["geo"] is False
+    assert c.post("/api/networks/import/sumo?name=bad", content=b"not a network").status_code == 422
+    c.delete(f"/api/networks/{m['id']}")
+
+
+def test_simulation_rerun_reproduces():
+    b = c.post("/api/networks/grid3x3/baseline").json()
+    alt = c.post(f"/api/scenarios/{b['id']}/copy?name=Actuated").json()
+    c.put(f"/api/scenarios/{alt['id']}", json=dict(controller="actuated"))
+    sim = c.post("/api/simulations", json=dict(reference=b["id"], alternatives=[alt["id"]], seeds=[5, 6], depart_jitter_s=60)).json()
+
+    def done(sid):
+        for _ in range(600):
+            st = c.get(f"/api/simulations/{sid}").json()
+            if st["state"] != "running":
+                return st
+            time.sleep(0.5)
+    first = done(sim["id"])
+    c.put(f"/api/scenarios/{alt['id']}", json=dict(controller="fixed"))      # later edit must not leak in
+    again = done(c.post(f"/api/simulations/{sim['id']}/rerun").json()["id"])
+    assert again["rerun_of"] == sim["id"] and again["state"] == "done"
+    v = lambda st: c.get(f"/api/runs/{st['alternatives'][0]['run_id']}").json()["aggregate"]["kpis"]["mean_travel_time_s"]["values"]
+    assert v(first) == v(again)

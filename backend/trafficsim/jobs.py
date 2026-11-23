@@ -21,7 +21,7 @@ from . import analysis, build, config, runner
 from .scenario import Scenario
 
 RUNS_DIR = config.WORKSPACE_DIR / "runs"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 
 
 def versions() -> dict:

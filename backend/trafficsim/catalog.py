@@ -84,6 +84,9 @@ def _prepare_resco(nid, spec, out: Path):
 def ensure_network(nid: str) -> Path:
     """Return the prepared directory for a base network, building it if needed."""
     if nid not in SPECS:
+        user = config.NETWORKS_DIR / nid
+        if "/" not in nid and ".." not in nid and (user / "meta.json").exists():
+            return user                      # an imported network
         raise KeyError(f"unknown network '{nid}'")
     out = config.NETWORKS_DIR / nid
     meta_f = out / "meta.json"
@@ -111,6 +114,8 @@ def _count_trips(rou: Path) -> int:
 
 def meta(nid: str) -> dict:
     m = json.loads((ensure_network(nid) / "meta.json").read_text())
+    if nid not in SPECS:
+        return m
     return dict(m, name=SPECS[nid]["name"], description=SPECS[nid]["description"], note=SPECS[nid].get("note", ""))
 
 
@@ -122,4 +127,7 @@ def list_networks() -> list:
         out.append(dict(json.loads(m.read_text()), name=spec["name"], description=spec["description"], note=spec.get("note", "")) if m.exists()
                    else dict(id=nid, name=spec["name"], description=spec["description"], note=spec.get("note", ""), kind=spec["kind"],
                              prepared=False))
+    for m in sorted(config.NETWORKS_DIR.glob("*/meta.json"), key=lambda f: f.stat().st_mtime):
+        if m.parent.name not in SPECS:
+            out.append(json.loads(m.read_text()))
     return out

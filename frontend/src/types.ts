@@ -1,6 +1,7 @@
 export type Network = {
   id: string; name: string; description: string; kind: string;
   edges?: number; signals?: number; trips?: number; geo?: boolean; license?: string; note?: string;
+  source?: string; created?: number; prepared?: boolean;
 };
 
 export type Edit =
@@ -15,6 +16,7 @@ export type Controller = "fixed" | "actuated" | "max_pressure";
 export type Scenario = {
   id: string; name: string; base_network: string; demand_scale: number;
   controller: Controller; edits: Edit[]; parent_id?: string | null;
+  description?: string; baseline?: boolean; created?: number;
 };
 
 export type EdgeProps = {
@@ -54,6 +56,12 @@ export type RunSummary = {
   parent_id?: string | null; error?: string | null; stage?: string | null; depart_jitter_s?: number;
 };
 export type Experiment = { id: string; before: RunSummary; after: RunSummary };
+export type SimPart = { scenario_id: string; scenario_name: string; run_id: string; job: Job };
+export type Simulation = {
+  id: string; name: string; network: string; created: number; seeds: number[]; depart_jitter_s: number;
+  reference: SimPart; alternatives: SimPart[]; state: "running" | "done" | "failed" | "cancelled" | "missing";
+  rerun_of?: string | null;
+};
 export type Bundle = {
   bundle_version: string; scenario: Scenario; run: { seeds: number[] };
   simulator?: { version: string }; app?: { version: string };

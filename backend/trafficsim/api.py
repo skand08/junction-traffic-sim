@@ -3,18 +3,20 @@
 Run: uvicorn trafficsim.api:app --reload   (from the backend/ directory)
 """
 import os
+import shutil
 import tempfile
+import uuid
 import threading
 from pathlib import Path
 from typing import List, Optional, Union
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, build, catalog, config, geometry, jobs, names, runner, scenario as sc
+from . import analysis, build, catalog, config, geometry, importer, jobs, names, runner, simulations, scenario as sc
 from .scenario import Edit, Scenario
 
 app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
@@ -58,6 +60,129 @@ def network(nid: str):
         _nf(e)
 
 
+def _base_scenario(nid: str) -> Scenario:
+    try:
+        catalog.ensure_network(nid)
+    except KeyError as e:
+        _nf(e)
+    except FileNotFoundError:
+        raise HTTPException(503, "This network's files are not installed on the server.")
+    return Scenario(id=f"base-{nid}", base_network=nid, name="As it is", baseline=True)
+
+
+@app.get("/api/networks/{nid}/geometry")
+def network_geometry(nid: str):
+    s = _base_scenario(nid)
+    net = _built_net(s)
+    g = geometry.network_geojson(str(net), net.stat().st_mtime)
+    g = dict(g, features=[dict(f, properties=dict(f["properties"])) for f in g["features"]])
+    names.label_edges(g["features"], nid)
+    return dict(g, edited={})
+
+
+@app.get("/api/networks/{nid}/signals")
+def network_signals(nid: str):
+    return geometry.signal_programs(str(_built_net(_base_scenario(nid))))
+
+
+@app.post("/api/networks/{nid}/baseline")
+def network_baseline(nid: str):
+    """The network's "As it is" scenario (no changes, fixed timing), created on first use."""
+    _base_scenario(nid)
+    for s in sc.list_all():
+        if s.base_network == nid and s.baseline:
+            return s
+    return sc.save(Scenario(base_network=nid, name="As it is", baseline=True,
+                            description="The network as it is today, with no changes."))
+
+
+def _upload_dir():
+    d = config.WORKSPACE_DIR / "uploads" / uuid.uuid4().hex[:8]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _import_errors(fn):
+    try:
+        return fn()
+    except importer.ImportError_ as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/networks/import/osm")
+async def import_osm_file(request: Request, name: str = "Imported area", trips: Optional[int] = None):
+    """Body: an .osm / .osm.xml file (optionally gzip or bzip2 compressed)."""
+    body = await request.body()
+    if len(body) < 100:
+        raise HTTPException(422, "The file is empty.")
+    if len(body) > 200_000_000:
+        raise HTTPException(413, "The file is larger than 200 MB. Import a smaller area.")
+    d = _upload_dir()
+    f = d / "upload.osm"
+    f.write_bytes(body)
+    try:
+        return _import_errors(lambda: importer.import_osm(f, name, trips, source="an uploaded OpenStreetMap file"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+class AreaImport(BaseModel):
+    bbox: List[float] = Field(min_length=4, max_length=4)   # west, south, east, north
+    name: str = "Imported area"
+    trips: Optional[int] = Field(None, ge=10, le=50000)
+
+
+@app.post("/api/networks/import/osm-area")
+def import_osm_area(body: AreaImport):
+    d = _upload_dir()
+    try:
+        def go():
+            f = importer.fetch_osm_bbox(body.bbox, d / "area.osm")
+            return importer.import_osm(f, body.name, body.trips, source="OpenStreetMap (Overpass API)")
+        return _import_errors(go)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@app.post("/api/networks/import/sumo")
+async def import_sumo_file(request: Request, name: str = "Uploaded network", trips: Optional[int] = None):
+    """Body: a SUMO .net.xml, or a .zip with one .net.xml and optionally one .rou.xml."""
+    body = await request.body()
+    d = _upload_dir()
+    try:
+        routes = None
+        if body[:2] == b"PK":
+            import zipfile
+            zp = d / "upload.zip"
+            zp.write_bytes(body)
+            with zipfile.ZipFile(zp) as z:
+                members = [m for m in z.namelist() if not m.endswith("/") and ".." not in m]
+                nets = [m for m in members if m.endswith(".net.xml")]
+                rous = [m for m in members if m.endswith(".rou.xml")]
+                if len(nets) != 1:
+                    raise HTTPException(422, "The zip must contain exactly one .net.xml file.")
+                net = d / "net.net.xml"
+                net.write_bytes(z.read(nets[0]))
+                if rous:
+                    routes = d / "routes.rou.xml"
+                    routes.write_bytes(z.read(rous[0]))
+        else:
+            net = d / "net.net.xml"
+            net.write_bytes(body)
+        return _import_errors(lambda: importer.import_sumo(net, name, routes, trips))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@app.delete("/api/networks/{nid}")
+def delete_network(nid: str):
+    try:
+        _import_errors(lambda: importer.delete_network(nid))
+    except KeyError as e:
+        _nf(e)
+    return dict(ok=True)
+
+
 # ---------- scenarios ----------
 class NewScenario(BaseModel):
     base_network: str
@@ -66,6 +191,7 @@ class NewScenario(BaseModel):
 
 class ScenarioUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     demand_scale: Optional[float] = Field(None, ge=0.1, le=3.0)
     controller: Optional[str] = None
     edits: Optional[List[Edit]] = None
@@ -128,8 +254,10 @@ def update_scenario(sid: str, body: ScenarioUpdate):
 @app.post("/api/scenarios/{sid}/copy")
 def copy_scenario(sid: str, name: Optional[str] = None):
     s = _get(sid)
-    c = Scenario(**{k: v for k, v in s.model_dump().items() if k not in ("id", "created", "parent_id")},
-                 parent_id=s.id)
+    data = {k: v for k, v in s.model_dump().items() if k not in ("id", "created", "parent_id", "baseline")}
+    if s.baseline:
+        data["description"] = ""             # the baseline's description describes the baseline only
+    c = Scenario(**data, parent_id=s.id)      # a copy is never the network's "as it is" scenario
     c.name = name or f"{s.name} (changed)"
     return sc.save(c)
 
@@ -243,6 +371,107 @@ def compare(before: str, after: str):
     c.update(headline=analysis.headline(c), before=dict(run=before, scenario=a["scenario"]),
              after=dict(run=after, scenario=b["scenario"]))
     return c
+
+
+# ---------- simulations: reference + alternatives with the same seeds ----------
+class SimulationRequest(BaseModel):
+    reference: str                                   # scenario id
+    alternatives: List[str] = Field(min_length=1, max_length=8)
+    seeds: Union[int, List[int]] = config.DEFAULT_SEEDS
+    depart_jitter_s: float = Field(0, ge=0, le=1800)
+    name: Optional[str] = None
+
+
+@app.post("/api/simulations")
+def create_simulation(body: SimulationRequest):
+    ref = _get(body.reference)
+    alts = [_get(a) for a in body.alternatives]
+    if any(a.base_network != ref.base_network for a in alts):
+        raise HTTPException(422, "All scenarios in a simulation must use the same network.")
+    if body.reference in body.alternatives:
+        raise HTTPException(422, "The reference cannot also be an alternative.")
+    seeds = list(range(1, body.seeds + 1)) if isinstance(body.seeds, int) else body.seeds
+    if not 1 <= len(seeds) <= 50:
+        raise HTTPException(422, "Use between 1 and 50 seeds.")
+    for s in [ref, *alts]:
+        _check(s)
+    jr = jm().submit(ref, seeds, body.depart_jitter_s)
+    out = []
+    for a in alts:
+        j = jm().submit(a, seeds, body.depart_jitter_s)
+        out.append(dict(scenario_id=a.id, scenario_name=a.name, run_id=j["run_id"]))
+    name = body.name or (alts[0].name if len(alts) == 1 else f"{len(alts)} scenarios") + f" vs {ref.name}"
+    return _sim_status(simulations.new(name, ref.base_network, dict(scenario_id=ref.id, scenario_name=ref.name,
+                                                                    run_id=jr["run_id"]), out, seeds, body.depart_jitter_s))
+
+
+def _sim_status(sim: dict) -> dict:
+    def st(rid):
+        try:
+            return jm().status(rid)
+        except KeyError:
+            return dict(id=rid, run_id=rid, state="missing", done=0, total=len(sim["seeds"]), message="", warnings=[], error="Run not found")
+    sim = dict(sim)
+    sim["reference"] = dict(sim["reference"], job=st(sim["reference"]["run_id"]))
+    sim["alternatives"] = [dict(a, job=st(a["run_id"])) for a in sim["alternatives"]]
+    states = [sim["reference"]["job"]["state"]] + [a["job"]["state"] for a in sim["alternatives"]]
+    sim["state"] = ("running" if any(x in ("queued", "building", "running") for x in states) else
+                    "failed" if "failed" in states else "cancelled" if "cancelled" in states else
+                    "missing" if "missing" in states else "done")
+    return sim
+
+
+@app.get("/api/simulations")
+def list_simulations(network: Optional[str] = None):
+    return [_sim_status(s) for s in simulations.list_all() if not network or s["network"] == network]
+
+
+@app.get("/api/simulations/{sid}")
+def get_simulation(sid: str):
+    try:
+        return _sim_status(simulations.load(sid))
+    except KeyError as e:
+        _nf(e)
+
+
+@app.post("/api/simulations/{sid}/cancel")
+def cancel_simulation(sid: str):
+    try:
+        sim = simulations.load(sid)
+    except KeyError as e:
+        _nf(e)
+    for rid in [sim["reference"]["run_id"]] + [a["run_id"] for a in sim["alternatives"]]:
+        try:
+            jm().cancel(rid)
+        except KeyError:
+            pass
+    return _sim_status(sim)
+
+
+@app.post("/api/simulations/{sid}/rerun")
+def rerun_simulation(sid: str):
+    """Run the same scenario versions again (from the snapshots stored with each run), same seeds and
+    variation, to check that results reproduce. Later edits to the scenarios do not affect it."""
+    try:
+        sim = simulations.load(sid)
+        snaps = [Scenario.model_validate(jobs.load_run(p["run_id"])["scenario"])
+                 for p in [sim["reference"], *sim["alternatives"]]]
+    except KeyError as e:
+        _nf(e)
+    jit = sim.get("depart_jitter_s", 0)
+    parts = []
+    for p, snap in zip([sim["reference"], *sim["alternatives"]], snaps):
+        j = jm().submit(snap, sim["seeds"], jit)
+        parts.append(dict(scenario_id=p["scenario_id"], scenario_name=p["scenario_name"], run_id=j["run_id"]))
+    new = simulations.new(f"{sim['name']} (run again)", sim["network"], parts[0], parts[1:], sim["seeds"], jit)
+    new["rerun_of"] = sid
+    return _sim_status(simulations.save(new))
+
+
+@app.delete("/api/simulations/{sid}")
+def delete_simulation(sid: str):
+    simulations.delete(sid)
+    return dict(ok=True)
 
 
 # ---------- bundles ----------

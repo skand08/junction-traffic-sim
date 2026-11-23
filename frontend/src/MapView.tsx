@@ -65,12 +65,32 @@ type Props = {
   runEdges?: Record<string, EdgeAgg> | null;
   cmpEdges?: Record<string, EdgeCmp> | null;
   focus?: { bbox: [number, number, number, number]; key: number; maxZoom?: number } | null;
+  basemap?: boolean;                                   // show the street map even without a network
+  onBounds?: (bbox: [number, number, number, number], km2: number) => void;   // visible area, after moves
 };
 
-export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus }: Props) {
+const DEFAULT_VIEW = { longitude: 73.8567, latitude: 18.5204, zoom: 15.5 };   // Pune, India
+
+function areaKm2([w, s, e, n]: [number, number, number, number]) {
+  const lat = ((s + n) / 2) * Math.PI / 180;
+  return Math.abs(e - w) * 111.32 * Math.cos(lat) * Math.abs(n - s) * 110.57;
+}
+
+export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus, basemap, onBounds }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<View>({ longitude: 0, latitude: 0, zoom: 14 });
+  const [view, setView] = useState<View>(basemap && !geometry ? DEFAULT_VIEW : { longitude: 0, latitude: 0, zoom: 14 });
+  useEffect(() => {
+    if (!onBounds) return;
+    const el = box.current;
+    const w = el?.clientWidth ?? 800, h = el?.clientHeight ?? 600;
+    const [[x0, y0], [x1, y1]] = [
+      new WebMercatorViewport({ ...view, width: w, height: h }).unproject([0, h]),
+      new WebMercatorViewport({ ...view, width: w, height: h }).unproject([w, 0]),
+    ] as [number, number][];
+    const b: [number, number, number, number] = [x0, y0, x1, y1];
+    onBounds(b, areaKm2(b));
+  }, [view.longitude, view.latitude, view.zoom]);
 
   const edges = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "edge"), [geometry]);
   const signals = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "signal"), [geometry]);
@@ -90,7 +110,12 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
   // Fit once per network (bbox); after that the user owns the camera.
   const bboxKey = geometry?.bbox?.join(",") ?? "none";
   useEffect(() => { if (geometry) fit(geometry.bbox); }, [bboxKey]);
-  useEffect(() => { if (focus) fit(focus.bbox, focus.maxZoom ?? 17.5); }, [focus?.key]);
+  // act only on zoom requests made while this map is shown, not on one left over from an earlier map
+  const lastFocus = useRef(focus?.key);
+  useEffect(() => {
+    if (focus && focus.key !== lastFocus.current) fit(focus.bbox, focus.maxZoom ?? 17.5);
+    lastFocus.current = focus?.key;
+  }, [focus?.key]);
 
   const selectedFeature = selection
     ? (selection.kind === "edge" ? edges : signals).find((f) => f.properties.id === selection.id) ?? null
@@ -183,7 +208,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
         onClick={(info: any) => !info.object && onSelect(null)}
         getCursor={({ isHovering, isDragging }: any) => (isHovering ? "pointer" : isDragging ? "grabbing" : "grab")}
       >
-        {geometry?.geo && <Map mapStyle={BASEMAP} attributionControl={{ compact: true }} />}
+        {(geometry?.geo || (basemap && !geometry)) && <Map mapStyle={BASEMAP} attributionControl={{ compact: true }} />}
       </DeckGL>
       <div className="map-tools" role="toolbar" aria-label="Map view">
         <button className="icon" onClick={() => zoomBy(1)} aria-label="Zoom in" title="Zoom in">+</button>
