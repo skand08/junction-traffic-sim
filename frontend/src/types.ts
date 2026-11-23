@@ -51,14 +51,14 @@ export type RunSummary = {
   id: string; scenario_id: string; scenario_name: string; base_network?: string; controller?: Controller;
   demand_scale?: number; edits?: number; state: string; seeds: number[]; started?: number; finished?: number;
   versions?: Versions; teleports?: number | null; mean_travel_time_s?: number | null;
-  parent_id?: string | null; error?: string | null; stage?: string | null;
+  parent_id?: string | null; error?: string | null; stage?: string | null; depart_jitter_s?: number;
 };
 export type Experiment = { id: string; before: RunSummary; after: RunSummary };
 export type Bundle = {
   bundle_version: string; scenario: Scenario; run: { seeds: number[] };
   simulator?: { version: string }; app?: { version: string };
   experiment?: {
-    before_run: string; after_run: string; baseline: Scenario; seeds: number[]; versions?: Versions;
+    before_run: string; after_run: string; baseline: Scenario; seeds: number[]; versions?: Versions; depart_jitter_s?: number;
     values: Record<string, { before: (number | null)[]; after: (number | null)[] }>;
   };
 };
@@ -68,6 +68,7 @@ export type EdgeAgg = { speed_kmh: number | null; delay_per_veh_s: number | null
 export type Run = {
   id: string; state: string; warnings: string[]; scenario: Scenario; seeds: number[]; started?: number; finished?: number;
   versions?: Versions; build?: { unroutable_trips: number; total_trips: number }; error?: string; stage?: string;
+  depart_jitter_s?: number;
   aggregate: { kpis: Record<string, KpiAgg>; edges: Record<string, EdgeAgg>; seeds: number[] };
 };
 

@@ -40,8 +40,8 @@ export const api = {
     req<{ scenario: Scenario; warnings: string[] }>(`/scenarios/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   geometry: (id: string) => req<Geometry>(`/scenarios/${id}/geometry`),
   signals: (id: string) => req<Record<string, SignalProgram>>(`/scenarios/${id}/signals`),
-  startRun: (id: string, seeds: number | number[]) =>
-    req<Job>(`/scenarios/${id}/runs`, { method: "POST", body: JSON.stringify({ seeds }) }),
+  startRun: (id: string, seeds: number | number[], depart_jitter_s = 0) =>
+    req<Job>(`/scenarios/${id}/runs`, { method: "POST", body: JSON.stringify({ seeds, depart_jitter_s }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),
   run: (id: string) => req<Run>(`/runs/${id}`),
   compare: (before: string, after: string) => req<Comparison>(`/compare?before=${before}&after=${after}`),

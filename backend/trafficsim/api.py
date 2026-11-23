@@ -182,6 +182,7 @@ def scenario_signals(sid: str):
 # ---------- runs ----------
 class RunRequest(BaseModel):
     seeds: Union[int, List[int]] = config.DEFAULT_SEEDS
+    depart_jitter_s: float = Field(0, ge=0, le=1800)   # vary trip start times by up to ± this many seconds
 
 
 @app.post("/api/scenarios/{sid}/runs")
@@ -191,7 +192,7 @@ def start_run(sid: str, body: RunRequest):
     seeds = list(range(1, body.seeds + 1)) if isinstance(body.seeds, int) else body.seeds
     if not 1 <= len(seeds) <= 50:
         raise HTTPException(422, "Use between 1 and 50 seeds.")
-    return jm().submit(s, seeds)
+    return jm().submit(s, seeds, body.depart_jitter_s)
 
 
 @app.get("/api/jobs/{jid}")
@@ -263,6 +264,7 @@ def export_bundle(sid: str, seeds: int = config.DEFAULT_SEEDS, first_seed: int =
         seed_list = b["seeds"]
         keep = ("mean_travel_time_s", "mean_delay_s", "completed_trips", "teleports")
         exp = dict(before_run=before, after_run=after, baseline=a["scenario"], seeds=b["seeds"],
+                   depart_jitter_s=b.get("depart_jitter_s", 0),
                    versions=b.get("versions"),
                    values={k: dict(before=a["aggregate"]["kpis"][k]["values"], after=b["aggregate"]["kpis"][k]["values"])
                            for k in keep if k in a.get("aggregate", {}).get("kpis", {})})
