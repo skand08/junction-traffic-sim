@@ -601,3 +601,58 @@ dl.facts.wide { grid-template-columns: 200px 1fr; }
 .live-find { margin: 10px 0 6px; position: relative; }
 .live-find .find { position: relative; width: 100%; }
 .live-find .find input { width: 100%; }
+
+.rl-pick { display: grid; gap: 6px; margin-top: 6px; }
+.agent-dec { margin: 8px 0; padding: 8px 10px; background: var(--mist); border-radius: var(--radius-s); }
+.dec-row { display: grid; grid-template-columns: 62px minmax(0, auto) minmax(40px, 1fr) 48px; gap: 8px; align-items: center; font-size: 12px; padding: 2px 0; }
+.dec-row.chosen { font-weight: 700; }
+.dec-bar { height: 8px; background: var(--paper); border-radius: 4px; overflow: hidden; }
+.dec-bar i { display: block; height: 100%; background: var(--asphalt-2); }
+.dec-row.chosen .dec-bar i { background: var(--sign); }
+.dec-val { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------- research ---------- */
+.research-tabs { max-width: 560px; margin: 0 0 18px; }
+.form-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.form-cols .card { margin-bottom: 0; }
+.research-form .form-cols, .agent-detail .form-cols, .bench-detail .form-cols { margin-bottom: 16px; }
+.research-form .card h2 + h2, .research-form .card .field-check + h2, .research-form .card .label + h2 { margin-top: 18px; }
+.research-form .card h2:not(:first-child) { margin-top: 18px; }
+.research-form .field input[type="number"] { width: 100px; padding: 4px 6px; border: 1px solid var(--asphalt); border-radius: var(--radius-s); }
+input.text.short { width: 120px; }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { border: 1px solid var(--asphalt); background: var(--paper); border-radius: 999px; padding: 3px 12px; cursor: pointer; font-size: var(--t-s); font-variant-numeric: tabular-nums; }
+.pill[aria-pressed="true"] { background: var(--asphalt); color: var(--paper); }
+.check-list { max-height: 180px; overflow-y: auto; }
+.rl-row { gap: 8px; margin: 6px 0; }
+.rl-row .grow { flex: 1; }
+.detail-title { font-size: var(--t-l, 22px); margin: 6px 0; }
+.progress { height: 6px; background: var(--mist); border-radius: 3px; overflow: hidden; margin: 10px 0 4px; }
+.progress i { display: block; height: 100%; background: var(--sign); transition: width .4s; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 16px 0; }
+.chart-grid .card { margin: 0; }
+.chart { margin: 0; }
+.chart svg { width: 100%; height: auto; display: block; font-size: 10px; fill: var(--ink-2, #555); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .axis-label { font-size: 10px; fill: var(--ink-3, #777); }
+.chart-empty { padding: 40px 0; text-align: center; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin-top: 4px; }
+.legend-row i { display: inline-block; width: 12px; height: 3px; margin-right: 5px; vertical-align: middle; }
+.table-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+table.library.compact td, table.library.compact th { padding: 5px 8px; font-size: 13px; }
+.bench-table td { vertical-align: top; }
+.ref-row { background: var(--mist); }
+.good-text { color: var(--sign); }
+.warn-text { color: var(--warn-ink); }
+.chip.done { color: var(--asphalt); background: var(--mist); }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: var(--t-s); }
+.facts dt { font-weight: 600; }
+.facts dd { margin: 0; word-break: break-word; }
+pre.config { max-height: 300px; overflow: auto; background: var(--mist); padding: 10px; border-radius: var(--radius-s); font-size: 11px; }
+.plain-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.error-box { background: var(--err-bg, #fbe9e9); color: var(--err-ink); padding: 8px 12px; border-radius: var(--radius-s); }
+.seg button[role="tab"][aria-selected="true"] { background: var(--asphalt); color: var(--paper); }
+a.btn { color: inherit; text-decoration: none; display: inline-block; }
+.dec-row .state { display: flex; flex-wrap: nowrap; gap: 1px; max-width: 150px; overflow: hidden; }
+.dec-row .state i { width: 4px; height: 10px; flex: none; margin: 0; }
+.chart svg { font-size: 11px; }

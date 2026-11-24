@@ -1,4 +1,4 @@
-import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic } from "./types";
+import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, EpisodeRow } from "./types";
 
 const BASE = (import.meta as any).env?.VITE_API ?? "/api";
 
@@ -63,6 +63,24 @@ export const api = {
   liveControl: (id: string, c: { action: "pause" | "resume" | "speed" | "reset" | "watch"; speed?: number; watch?: { edge?: string; tls?: string } | null }) =>
     req<LiveInfo>(`/live/${id}/control`, { method: "POST", body: JSON.stringify(c) }),
   liveStop: (id: string) => req<{ ok: boolean }>(`/live/${id}`, { method: "DELETE" }),
+  researchDefaults: () => req<{ agent: AgentConfig }>("/research/defaults"),
+  agents: () => req<AgentInfo[]>("/research/agents"),
+  agent: (id: string) => req<AgentInfo>(`/research/agents/${id}`),
+  agentLog: (id: string) => req<EpisodeRow[]>(`/research/agents/${id}/log`),
+  trainAgent: (cfg: AgentConfig) => req<AgentInfo>("/research/agents", { method: "POST", body: JSON.stringify(cfg) }),
+  agentControl: (id: string, action: "pause" | "resume" | "stop") =>
+    req<AgentInfo>(`/research/agents/${id}/control`, { method: "POST", body: JSON.stringify({ action }) }),
+  deleteAgent: (id: string) => req<{ ok: boolean }>(`/research/agents/${id}`, { method: "DELETE" }),
+  agentModelUrl: (id: string, which = "final") => `${BASE}/research/agents/${id}/model?which=${encodeURIComponent(which)}`,
+  agentExportUrl: (id: string) => `${BASE}/research/agents/${id}/export`,
+  benchmarks: () => req<BenchInfo[]>("/research/benchmarks"),
+  benchmark: (id: string) => req<BenchInfo>(`/research/benchmarks/${id}`),
+  benchStats: (id: string) => req<BenchStats>(`/research/benchmarks/${id}/stats`),
+  runBenchmark: (cfg: BenchConfig) => req<BenchInfo>("/research/benchmarks", { method: "POST", body: JSON.stringify(cfg) }),
+  cancelBenchmark: (id: string) => req<BenchInfo>(`/research/benchmarks/${id}/cancel`, { method: "POST" }),
+  deleteBenchmark: (id: string) => req<{ ok: boolean }>(`/research/benchmarks/${id}`, { method: "DELETE" }),
+  benchCsvUrl: (id: string) => `${BASE}/research/benchmarks/${id}/export.csv`,
+  benchJsonUrl: (id: string) => `${BASE}/research/benchmarks/${id}/export.json`,
   results: (network?: string) => req<ResultSummary[]>(`/results${network ? `?network=${network}` : ""}`),
   startSimulation: (body: { reference: string; alternatives: string[]; seeds: number[]; depart_jitter_s: number; name?: string }) =>
     req<Simulation>("/simulations", { method: "POST", body: JSON.stringify(body) }),

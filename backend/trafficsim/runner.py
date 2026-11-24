@@ -30,13 +30,14 @@ MP_ALL_RED = 2      # s all-red clearance
 MP_REACH_M = 60     # m of road counted on each side of a signal, following lanes through short pieces
 
 
-def _lane_reach(net_file: str) -> tuple[dict, dict]:
+def _lane_reach(net_file: str, reach_m: float | None = None) -> tuple[dict, dict]:
     """For every lane, the lanes within MP_REACH_M downstream (fwd) and upstream (back) of it.
 
     Pressure compares queues before and after a signal. On real networks the lane right after a
     signal is often a 0-3 m piece between two nodes of one junction cluster; it never holds a queue,
     so a controller looking only at it sends traffic into roads that are already full."""
     import sumolib
+    reach = MP_REACH_M if reach_m is None else float(reach_m)
     net = sumolib.net.readNet(net_file)
     succ, pred, length = {}, {}, {}
     for e in net.getEdges(withInternal=False):
@@ -51,7 +52,7 @@ def _lane_reach(net_file: str) -> tuple[dict, dict]:
         seen, frontier, got = [start], [(start, length.get(start, 0.0))], {start}
         while frontier:
             lane, dist = frontier.pop(0)
-            if dist >= MP_REACH_M:
+            if dist >= reach:
                 continue
             for n in nxt.get(lane, []):
                 if n not in got and len(got) < 12:
@@ -113,7 +114,15 @@ def _common_args(job: dict, out: Path) -> list:
             "--ignore-junction-blocker", str(JUNCTION_BLOCKER_S),
             "--no-step-log", "true", "--log", str(out / "sumo.log"),
             "--tripinfo-output", str(out / "tripinfo.xml"), "--tripinfo-output.write-unfinished", "true",
-            "--statistic-output", str(out / "stats.xml")]
+            "--statistic-output", str(out / "stats.xml")] + _research_args(job, out)
+
+
+def _research_args(job: dict, out: Path) -> list:
+    """Research benchmarks also measure emissions (SUMO's emissions device, default HBEFA model) and the
+    number of vehicles stopped each second (summary output). Off for ordinary runs, which stay unchanged."""
+    if not job.get("research"):
+        return []
+    return ["--device.emissions.probability", "1", "--summary-output", str(out / "summary.xml")]
 
 
 def _run_native(job: dict, out: Path):
@@ -230,6 +239,21 @@ def _run_max_pressure(job: dict, out: Path):
         ls.close()
 
 
+def _run_rl(job: dict, out: Path):
+    """A trained agent controls the signals (greedy). job["rl_model"] is the .npz file."""
+    import libsumo as ls
+    from .rl.policy import RLController
+    ls.start(["sumo", *_common_args(job, out)])
+    try:
+        ctrl = RLController(ls, job["net_file"], job["rl_model"])
+        end = job["end"] + config.DRAIN_S
+        while ls.simulation.getTime() < end:
+            ls.simulationStep()
+            ctrl.step()
+    finally:
+        ls.close()
+
+
 TELEPORT_RE = re.compile(r"Teleporting vehicle '([^']+)'")
 # per-trip status codes stored with each seed result
 NORMAL, TELEPORTED, UNFINISHED, REMOVED = 0, 1, 2, 3
@@ -245,7 +269,7 @@ def teleported_ids(out: Path) -> set:
 
 def _parse(job: dict, out: Path) -> dict:
     begin, end = job["begin"], job["end"]
-    tt, loss, wait, stops = [], [], [], []
+    tt, loss, wait, stops, co2 = [], [], [], [], []
     unfinished = removed = late = teleported = 0
     tele = teleported_ids(out)
     trips = {}               # trip id -> [travel time from planned start, delay incl. queue to enter, status]
@@ -277,6 +301,9 @@ def _parse(job: dict, out: Path) -> dict:
         loss.append(l)
         wait.append(float(t.get("waitingTime")))
         stops.append(float(t.get("waitingCount")))
+        em = t.find("emissions")
+        if em is not None:
+            co2.append(float(em.get("CO2_abs", 0)) / 1000.0)      # mg -> g
     st = ET.parse(out / "stats.xml").getroot()
     tel = st.find("teleports")
     veh = st.find("vehicles")
@@ -288,6 +315,14 @@ def _parse(job: dict, out: Path) -> dict:
         not_inserted=int(veh.get("waiting", 0)) if veh is not None else 0,
         late_departures=late, removed=removed,
         total_delay_veh_h=sum(loss) / 3600.0)
+    if co2:
+        kpi["co2_g_per_trip"] = mean(co2)
+    summ = out / "summary.xml"
+    if summ.exists():                                  # vehicles stopped, averaged over the demand hour
+        halt = [float(s.get("halting", 0)) for s in ET.parse(summ).getroot().iter("step")
+                if begin <= float(s.get("time")) <= end]
+        kpi["mean_queue_veh"] = mean(halt)
+        kpi["throughput_veh_h"] = len(tt) * 3600.0 / max(1.0, end - begin)
     edges = {}
     root = ET.parse(out / "edges.xml").getroot()
     for iv in root.iter("interval"):
@@ -310,11 +345,13 @@ def run_seed(job: dict) -> dict:
     t0 = time.perf_counter()
     if job["controller"] == "max_pressure":
         _run_max_pressure(job, out)
+    elif job["controller"] == "rl":
+        _run_rl(job, out)
     else:
         _run_native(job, out)
     res = _parse(job, out)
     res.update(seed=job["seed"], wall_s=round(time.perf_counter() - t0, 2))
-    for f in ("tripinfo.xml", "sumo.log", "demand.rou.xml"):          # large; keep edges.xml and stats.xml
+    for f in ("tripinfo.xml", "sumo.log", "demand.rou.xml", "summary.xml"):          # large; keep edges.xml and stats.xml
         try:
             os.remove(out / f)
         except OSError:

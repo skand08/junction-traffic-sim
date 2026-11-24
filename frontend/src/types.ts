@@ -125,12 +125,12 @@ export type ResultSummary = {
 /* ---------- live simulation ---------- */
 export type LiveRoute = { from_edge: string; to_edge: string; per_hour: number };
 export type LiveSetup = {
-  scenario_id: string; controller?: Controller | null;
+  scenario_id: string; controller?: Controller | "rl" | null; rl_agent?: string | null; rl_checkpoint?: string;
   intensity: "low" | "medium" | "high"; profile: "normal" | "morning" | "evening";
   mix: "data" | "cars" | "mixed" | "two_wheelers"; duration_min: number; routes: LiveRoute[]; seed?: number;
 };
 export type LiveInfo = {
-  id: string; config: LiveSetup; scenario_name: string; network: string; controller: Controller;
+  id: string; config: LiveSetup; scenario_name: string; network: string; controller: Controller | "rl"; rl_agent?: string | null;
   begin: number; window_end: number; stop: number; warnings: string[];
   state: "starting" | "running" | "paused" | "finished" | "failed"; error: string | null; t: number | null; run: number;
 };
@@ -144,7 +144,8 @@ export type LiveLane = { index: number; vehicles: number; halting: number; speed
 export type LiveWatch =
   | { edge: string; lanes: LiveLane[]; travel_time_s: number }
   | { tls: string; state: string; phase: number; next_switch_s: number | null; phases: { duration: number; state: string }[];
-      approaches: { lane: string; edge: string; states: string; halting: number; vehicles: number }[] }
+      approaches: { lane: string; edge: string; states: string; halting: number; vehicles: number }[];
+      agent?: { t: number; chosen: number; held: boolean; kind: "value" | "probability"; values: number[]; phases: string[] } | null }
   | { error: string };
 export type LiveFrame = {
   kind: "frame"; seq: number; run: number; t: number; state: LiveInfo["state"]; speed: number;
@@ -153,3 +154,52 @@ export type LiveFrame = {
   hist: [number, number, number, number, number][]; watch: LiveWatch | null;
 };
 export type LiveStatic = { lanes: [string, string, number, boolean, [number, number][]][]; signal_marks: [string, number, number, number][]; geo: boolean };
+
+/* ---------- research mode ---------- */
+export type RLAlgorithm = "dqn" | "double_dqn" | "ppo";
+export type AgentConfig = {
+  name: string; scenario_id: string; algorithm: RLAlgorithm; sharing: "shared" | "independent";
+  observation: { reach_m: number; features: ("queue" | "approaching" | "out_queue" | "phase" | "elapsed")[] };
+  action: { delta_t: number; min_green: number; amber: number; all_red: number };
+  reward: "pressure" | "queue" | "waiting";
+  training: { episodes: number; episode_min: number; demand_scales: number[]; seed: number; checkpoint_every: number };
+  hyper: {
+    lr: number; gamma: number; hidden: number[]; batch: number; buffer: number; learning_starts: number; target_update: number;
+    eps_start: number; eps_end: number; eps_decay_frac: number; clip: number; epochs: number; minibatch: number;
+    gae_lambda: number; ent_coef: number; vf_coef: number;
+  };
+  parent_id?: string | null; note?: string;
+};
+export type AgentInfo = {
+  id: string; config: AgentConfig; checkpoints: string[]; has_model: boolean; has_best: boolean;
+  manifest: { created: number; versions: Versions; network: string; net_sha: string; scenario_name?: string; episode_seeds: number[]; numerics: string };
+  status: { state: "queued" | "running" | "paused" | "pausing" | "stopping" | "done" | "stopped" | "failed" | "interrupted";
+    episode?: number; episodes_done: number; episodes: number; agents?: number; n_obs?: number; n_act?: number;
+    best_episode?: number; error?: string; created: number; finished?: number };
+};
+export type EpisodeRow = {
+  episode: number; demand_scale: number; seed: number; wall_s: number; epsilon: number | null; entropy: number | null;
+  reward: number; reward_sum: number; decisions: number; travel_time_s: number | null; arrived: number;
+  mean_stopped: number; teleports: number; loss: number | null;
+};
+export type ControllerSpec = { kind: "fixed" | "actuated" | "max_pressure" | "rl"; agent_id?: string; checkpoint?: string; label?: string };
+export type BenchConfig = {
+  name: string; scenario_id: string; heldout_ids: string[]; controllers: ControllerSpec[]; reference: number;
+  demand_levels: number[]; seeds: number; first_seed: number; depart_jitter_s: number;
+};
+export type BenchInfo = {
+  id: string; config: BenchConfig;
+  manifest: { created: number; versions: Versions; seeds: number[]; labels: string[]; depart_jitter_s: number;
+    scenarios: { id: string; name: string; network: string; edits: Edit[]; demand_scale: number }[];
+    models: Record<string, { file: string; sha: string; config: AgentConfig; manifest: AgentInfo["manifest"] }> };
+  status: { state: "queued" | "running" | "done" | "failed" | "cancelled" | "interrupted"; done: number; total: number; error?: string; created: number; started?: number; finished?: number };
+};
+export type MeasureStat = { mean: number | null; ci_low: number | null; ci_high: number | null; n: number; values: number[] };
+export type VsRef = { diff: number | null; diff_ci_low: number | null; diff_ci_high: number | null; pct_change: number | null; share_seeds_better: number; n: number; significant: boolean; verdict: string };
+export type BenchStats = {
+  measures: Record<string, { label: string; unit: string; lower_is_better: boolean }>;
+  reference: number; labels: string[];
+  conditions: { scenario_id: string; scenario: string; network: string; demand: number; heldout: boolean;
+    rows: { controller: number; label: string; measures: Record<string, MeasureStat>; vs_reference: Record<string, VsRef> | null; runs: number; errors: string[]; teleport_trips: number }[] }[];
+  robustness: { controller: number; label: string; conditions: number; better: number; worse: number; mean_pct: number | null; worst_pct: number | null }[];
+};
