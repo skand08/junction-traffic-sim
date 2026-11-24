@@ -3,7 +3,7 @@ import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
 import FindList, { type Item } from "../FindList";
 import { Legend, listNav } from "../shared";
-import type { EdgeProps, Geometry, Network, SignalProgram, SignalProps } from "../types";
+import type { EdgeProps, Geometry, JunctionProps, Network, SignalProgram, SignalProps } from "../types";
 
 type Props = {
   networks: Network[];
@@ -44,9 +44,21 @@ export function itemsFor(geo: Geometry | null): Item[] {
       return { kind: "edge" as const, id: p.id, label: edgeLabel(p), changed: !!geo.edited?.[p.id],
         sub: `${p.car_allowed ? `${p.lanes} lane${p.lanes === 1 ? "" : "s"}, ${Math.round(p.speed_kmh)} km/h` : "closed"}, ${Math.round(p.length_m)} m` };
     }
+    if (f.properties.kind === "junction") {
+      const j = f.properties as JunctionProps;
+      return { kind: "junction" as const, id: j.id, label: junctionLabel(j, edges), changed: !!geo.edited?.[j.id],
+        sub: `no signal (${j.control.replace(/_/g, " ")}), ${j.incoming.length} roads in` };
+    }
     const s = f.properties as SignalProps;
-    return { kind: "signal" as const, id: s.id, label: signalLabel(s, edges), sub: `${s.incoming.length} approaches` };
-  }).sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label) : a.kind === "signal" ? -1 : 1));
+    return { kind: "signal" as const, id: s.id, label: signalLabel(s, edges), changed: !!geo.edited?.[s.id], sub: `${s.incoming.length} approaches` };
+  }).sort((a, b) => (a.kind === b.kind ? a.label.localeCompare(b.label) : RANK[a.kind] - RANK[b.kind]));
+}
+
+const RANK = { signal: 0, edge: 1, junction: 2 } as const;
+
+export function junctionLabel(j: JunctionProps, edges: Record<string, EdgeProps>) {
+  const names = [...new Set(j.incoming.map((e) => edges[e]?.name).filter(Boolean))];
+  return names.length ? `Junction at ${names.slice(0, 2).join(" / ")}` : `Junction ${j.id.length > 18 ? j.id.slice(0, 16) + "…" : j.id}`;
 }
 
 export function signalLabel(s: SignalProps, edges: Record<string, EdgeProps>) {
@@ -60,7 +72,9 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
   const [sel, setSel] = useState<Selection>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ bbox: [number, number, number, number]; key: number; maxZoom?: number } | null>(null);
-  const [bounds, setBounds] = useState<{ bbox: [number, number, number, number]; km2: number } | null>(null);
+  const [bounds, setBounds] = useState<{ bbox: [number, number, number, number]; km2: number; center: { lon: number; lat: number } } | null>(null);
+  const [areaSize, setAreaSize] = useState({ w_km: 1.5, h_km: 1.5 });
+  const [areaCenter, setAreaCenter] = useState<{ lon: number; lat: number; key: number } | undefined>(undefined);
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => { setSel(null); setConfirmDelete(false); setFocus(null); }, [selected]);
 
@@ -71,9 +85,9 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
     geo?.features.forEach((f) => { if (f.properties.kind === "edge") m[f.properties.id] = f.properties as EdgeProps; });
     return m;
   }, [geo]);
-  const zoomTo = (kind: "edge" | "signal", id: string) => {
+  const zoomTo = (kind: "edge" | "signal" | "junction", id: string) => {
     const f = geo?.features.find((x) => x.properties.kind === kind && x.properties.id === id);
-    if (f) setFocus({ bbox: featureBBox(f), key: Date.now(), maxZoom: kind === "signal" ? 17 : 17.5 });
+    if (f) setFocus({ bbox: featureBBox(f), key: Date.now(), maxZoom: kind === "edge" ? 17.5 : 17 });
   };
 
   async function remove() {
@@ -86,9 +100,10 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
       <div className="stage">
         {adding === "area" ? (
           <>
-            <MapView geometry={null} mode="layout" selection={null} onSelect={() => {}} basemap focus={focus}
-              onBounds={(bbox, km2) => setBounds({ bbox, km2 })} />
-            <div className="area-frame" aria-hidden="true" />
+            <MapView geometry={null} mode="layout" selection={null} onSelect={() => {}} basemap
+              areaBox={{ ...areaSize, center: areaCenter }}
+              onArea={(bbox, center) => setBounds({ bbox, km2: areaSize.w_km * areaSize.h_km, center })} />
+            <p className="map-note area-hint">Drag the map or click a spot to move the box. Its size stays the same at any zoom.</p>
           </>
         ) : geo ? (
           <>
@@ -106,7 +121,8 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
       <aside className="panel">
         <div className="panel-body">
           {adding ? (
-            <AddNetwork mode={adding} setMode={setAdding} bounds={bounds} onFocus={(bbox) => setFocus({ bbox, key: Date.now(), maxZoom: 16 })}
+            <AddNetwork mode={adding} setMode={setAdding} bounds={bounds} size={areaSize} setSize={setAreaSize}
+              onCenter={(lon, lat) => setAreaCenter({ lon, lat, key: Date.now() })}
               onDone={(n) => { setAdding(null); onChanged(); onSelect(n.id); }} fail={fail} />
           ) : (
             <section className="step">
@@ -177,9 +193,24 @@ function Inspector({ sel, edges, geo, signals, onClose }: {
           <dt>Lanes</dt><dd>{e.car_allowed ? e.lanes : "closed to cars"}</dd>
           <dt>Speed limit</dt><dd>{Math.round(e.speed_kmh)} km/h</dd>
           <dt>Length</dt><dd>{Math.round(e.length_m)} m</dd>
+          {e.lane_width_m ? <><dt>Lane width</dt><dd>{e.lane_width_m} m</dd></> : null}
           {e.road_type && <><dt>Type</dt><dd>{e.road_type.replace(/_/g, " ")}</dd></>}
           <dt>Id</dt><dd className="mono">{e.id}</dd>
         </dl>
+      </div>
+    );
+  }
+  if (sel.kind === "junction") {
+    const j = geo.features.find((f) => f.properties.kind === "junction" && f.properties.id === sel.id)?.properties as JunctionProps | undefined;
+    return (
+      <div className="selected-card">
+        <div className="row spread"><h3>{j ? junctionLabel(j, edges) : `Junction ${sel.id}`}</h3><button className="btn quiet small" onClick={onClose}>Close</button></div>
+        <dl className="facts">
+          <dt>Control</dt><dd>No signal ({j?.control.replace(/_/g, " ") ?? "?"})</dd>
+          <dt>Roads in</dt><dd>{j?.incoming.length ?? "?"}</dd>
+          <dt>Id</dt><dd className="mono">{sel.id}</dd>
+        </dl>
+        <p className="small muted">To add a signal here, build a scenario on this network.</p>
       </div>
     );
   }
@@ -199,10 +230,23 @@ function Inspector({ sel, edges, geo, signals, onClose }: {
 
 type Place = { display_name: string; boundingbox: [string, string, string, string] };
 
-function AddNetwork({ mode, setMode, bounds, onFocus, onDone, fail }: {
-  mode: AddMode; setMode: (m: AddMode | null) => void; bounds: { bbox: [number, number, number, number]; km2: number } | null;
-  onFocus: (bbox: [number, number, number, number]) => void; onDone: (n: Network) => void; fail: (e: unknown) => void;
+const SIZES = [0.5, 1, 1.5, 2];   // km, square presets
+
+function AddNetwork({ mode, setMode, bounds, size, setSize, onCenter, onDone, fail }: {
+  mode: AddMode; setMode: (m: AddMode | null) => void;
+  bounds: { bbox: [number, number, number, number]; km2: number; center: { lon: number; lat: number } } | null;
+  size: { w_km: number; h_km: number }; setSize: (s: { w_km: number; h_km: number }) => void;
+  onCenter: (lon: number, lat: number) => void; onDone: (n: Network) => void; fail: (e: unknown) => void;
 }) {
+  const [coord, setCoord] = useState("");
+  const [coordErr, setCoordErr] = useState<string | null>(null);
+  const goCoord = () => {
+    const m = coord.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    const lat = m ? Number(m[1]) : NaN, lon = m ? Number(m[2]) : NaN;
+    if (!m || Math.abs(lat) > 85 || Math.abs(lon) > 180) { setCoordErr("Type latitude, longitude, e.g. 18.5304, 73.8530"); return; }
+    setCoordErr(null); onCenter(lon, lat);
+  };
+  const km = (v: string) => Math.max(0.2, Math.min(5, Math.round((Number(v) || 0) * 10) / 10));
   const [name, setName] = useState("");
   const [trips, setTrips] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
@@ -211,7 +255,7 @@ function AddNetwork({ mode, setMode, bounds, onFocus, onDone, fail }: {
   const [places, setPlaces] = useState<Place[] | null>(null);
   const [placeErr, setPlaceErr] = useState<string | null>(null);
   const LIMIT = 6;
-  const tooBig = !!bounds && bounds.km2 > LIMIT;
+  const tooBig = size.w_km * size.h_km > LIMIT;
 
   async function search() {
     setPlaceErr(null); setPlaces(null);
@@ -246,7 +290,31 @@ function AddNetwork({ mode, setMode, bounds, onFocus, onDone, fail }: {
 
       {mode === "area" && (
         <>
-          <p className="lead">Move the map to the area you want. Everything inside the frame is downloaded from OpenStreetMap.</p>
+          <p className="lead">Set the size of the area, then move the box to the place you want. Everything inside it is downloaded from OpenStreetMap.</p>
+          <div className="area-size">
+            <label className="field"><span className="label">Width (km)</span>
+              <input type="number" className="text" min={0.2} max={5} step={0.1} value={size.w_km} aria-label="Width in km"
+                onChange={(e) => setSize({ ...size, w_km: km(e.target.value) })} /></label>
+            <span className="times" aria-hidden="true">×</span>
+            <label className="field"><span className="label">Height (km)</span>
+              <input type="number" className="text" min={0.2} max={5} step={0.1} value={size.h_km} aria-label="Height in km"
+                onChange={(e) => setSize({ ...size, h_km: km(e.target.value) })} /></label>
+          </div>
+          <div className="seg" role="group" aria-label="Square sizes">
+            {SIZES.map((k) => (
+              <button key={k} aria-pressed={size.w_km === k && size.h_km === k} onClick={() => setSize({ w_km: k, h_km: k })}>{k} × {k} km</button>
+            ))}
+          </div>
+          <p className={`small ${tooBig ? "warn-text" : "muted"}`}>
+            Area {(size.w_km * size.h_km).toFixed(2)} km² (limit {LIMIT} km²).{tooBig && " Make the box smaller to import it."}
+            {bounds && <> Centre {bounds.center.lat.toFixed(4)}, {bounds.center.lon.toFixed(4)}.</>}
+          </p>
+          <div className="row nowrap">
+            <input type="text" className="text grow" value={coord} placeholder="Go to coordinates: 18.5304, 73.8530" aria-label="Go to coordinates (latitude, longitude)"
+              onChange={(e) => setCoord(e.target.value)} onKeyDown={(e) => e.key === "Enter" && coord && goCoord()} />
+            <button className="btn secondary small" disabled={!coord} onClick={goCoord}>Go</button>
+          </div>
+          {coordErr && <p className="small warn-text">{coordErr}</p>}
           <div className="row nowrap">
             <input type="search" className="grow" value={q} placeholder="Find a place, e.g. Shivajinagar, Pune" aria-label="Find a place"
               onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && q && search()} />
@@ -259,15 +327,11 @@ function AddNetwork({ mode, setMode, bounds, onFocus, onDone, fail }: {
               {places.map((p, i) => (
                 <li key={i}><button className="link" onClick={() => {
                   const [s, n, w, e] = p.boundingbox.map(Number);
-                  onFocus([w, s, e, n]); setPlaces(null); if (!name) setName(p.display_name.split(",")[0]);
+                  onCenter((w + e) / 2, (s + n) / 2); setPlaces(null); if (!name) setName(p.display_name.split(",")[0]);
                 }}>{p.display_name}</button></li>
               ))}
             </ul>
           )}
-          <p className={`small ${tooBig ? "warn-text" : "muted"}`}>
-            {bounds ? `Area in the frame: ${bounds.km2.toFixed(2)} km² (limit ${LIMIT} km²).` : "Move the map to choose an area."}
-            {tooBig && " Zoom in to make it smaller."}
-          </p>
           <p className="small muted">Map data © OpenStreetMap contributors. Place search by Nominatim.</p>
         </>
       )}

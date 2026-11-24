@@ -9,7 +9,21 @@ export type Edit =
   | { type: "set_speed"; edge: string; speed_kmh: number }
   | { type: "close_road"; edge: string }
   | { type: "ban_turn"; from_edge: string; to_edge: string }
-  | { type: "retime_signal"; tls: string; durations: number[] };
+  | { type: "retime_signal"; tls: string; durations: number[] }
+  | { type: "add_signal"; node: string }
+  | { type: "remove_signal"; node: string }
+  | { type: "set_lane_width"; edge: string; width_m: number }
+  | { type: "set_road_type"; edge: string; road_type: RoadType };
+
+export type RoadType = "local" | "collector" | "arterial" | "major_arterial" | "expressway";
+/** Same presets as the backend (scenario.ROAD_TYPES): speed limit + right of way at unsignalled junctions. */
+export const ROAD_TYPES: { id: RoadType; label: string; speed_kmh: number; priority: number }[] = [
+  { id: "local", label: "Local street", speed_kmh: 30, priority: 3 },
+  { id: "collector", label: "Collector road", speed_kmh: 40, priority: 6 },
+  { id: "arterial", label: "Arterial road", speed_kmh: 50, priority: 9 },
+  { id: "major_arterial", label: "Major arterial", speed_kmh: 60, priority: 11 },
+  { id: "expressway", label: "Expressway", speed_kmh: 80, priority: 13 },
+];
 
 export type Controller = "fixed" | "actuated" | "max_pressure";
 
@@ -22,13 +36,16 @@ export type Scenario = {
 export type EdgeProps = {
   kind: "edge"; id: string; name: string; lanes: number; speed_kmh: number; length_m: number;
   road_type: string; from_node: string; to_node: string; car_allowed: boolean;
+  priority?: number; lane_width_m?: number;
   label?: string; heading?: string;
 };
 export type SignalProps = { kind: "signal"; id: string; tls: string[]; incoming: string[]; outgoing: string[] };
+/** An unsignalled junction where a signal could be added (two or more roads in for cars). */
+export type JunctionProps = { kind: "junction"; id: string; control: string; incoming: string[]; outgoing: string[] };
 export type Feature = {
   type: "Feature";
   geometry: { type: "LineString"; coordinates: [number, number][] } | { type: "Point"; coordinates: [number, number] };
-  properties: EdgeProps | SignalProps;
+  properties: EdgeProps | SignalProps | JunctionProps;
 };
 export type Geometry = { features: Feature[]; bbox: [number, number, number, number]; geo: boolean; edited: Record<string, string[]> };
 
@@ -90,4 +107,17 @@ export type Comparison = {
   headline: string; paired_seeds: number[]; kpis: Record<string, KpiCmp>; edges: Record<string, EdgeCmp>;
   matched?: { trips: number; share: number };
   before?: { run: string; scenario: Scenario }; after?: { run: string; scenario: Scenario };
+};
+
+/** One finished simulation with its headline numbers (GET /api/results). */
+export type ResultAlt = {
+  scenario_id: string; scenario_name: string; run_id: string; controller?: Controller; edits: number;
+  before_s: number | null; after_s: number | null; diff_s: number | null; pct: number | null;
+  verdict: "better" | "worse" | "no change" | null; confidence?: string; better: number; n: number | null;
+  teleports_before?: number | null; teleports_after?: number | null;
+};
+export type ResultSummary = {
+  id: string; name: string; network: string; created: number; seeds: number[]; depart_jitter_s: number;
+  rerun_of?: string | null; reference_name: string; alternatives: ResultAlt[];
+  versions?: Versions; started?: number; finished?: number;
 };

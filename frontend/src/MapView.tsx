@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
-import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { PathLayer, ScatterplotLayer, SolidPolygonLayer } from "@deck.gl/layers";
 import { WebMercatorViewport } from "@deck.gl/core";
 import { Map } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { EdgeAgg, EdgeCmp, EdgeProps, Feature, Geometry, SignalProps } from "./types";
+import type { EdgeAgg, EdgeCmp, EdgeProps, Feature, Geometry, JunctionProps, SignalProps } from "./types";
 
 export type MapMode = "layout" | "results" | "change";
-export type Selection = { kind: "edge" | "signal"; id: string } | null;
+export type Selection = { kind: "edge" | "signal" | "junction"; id: string } | null;
 
 const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
 type RGBA = [number, number, number, number];
@@ -95,34 +95,31 @@ type Props = {
   cmpEdges?: Record<string, EdgeCmp> | null;
   focus?: { bbox: [number, number, number, number]; key: number; maxZoom?: number } | null;
   basemap?: boolean;                                   // show the street map even without a network
-  onBounds?: (bbox: [number, number, number, number], km2: number) => void;   // visible area, after moves
+  /** Area picker: a box of exactly w_km × h_km centred on the map centre; moving the map moves the box. */
+  areaBox?: { w_km: number; h_km: number; center?: { lon: number; lat: number; key: number } } | null;
+  onArea?: (bbox: [number, number, number, number], center: { lon: number; lat: number }) => void;
 };
 
 const DEFAULT_VIEW = { longitude: 73.8567, latitude: 18.5204, zoom: 15.5 };   // Pune, India
 
-function areaKm2([w, s, e, n]: [number, number, number, number]) {
-  const lat = ((s + n) / 2) * Math.PI / 180;
-  return Math.abs(e - w) * 111.32 * Math.cos(lat) * Math.abs(n - s) * 110.57;
+/** [west, south, east, north] of a w_km × h_km box centred on (lon, lat). */
+export function boxAround(lon: number, lat: number, w_km: number, h_km: number): [number, number, number, number] {
+  const dLat = h_km / 110.57 / 2, dLon = w_km / (111.32 * Math.cos(lat * Math.PI / 180)) / 2;
+  return [lon - dLon, lat - dLat, lon + dLon, lat + dLat];
 }
 
-export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus, basemap, onBounds }: Props) {
+export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus, basemap, areaBox, onArea }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(basemap && !geometry ? DEFAULT_VIEW : { longitude: 0, latitude: 0, zoom: 14 });
+  const areaBbox = areaBox ? boxAround(view.longitude, view.latitude, areaBox.w_km, areaBox.h_km) : null;
   useEffect(() => {
-    if (!onBounds) return;
-    const el = box.current;
-    const w = el?.clientWidth ?? 800, h = el?.clientHeight ?? 600;
-    const [[x0, y0], [x1, y1]] = [
-      new WebMercatorViewport({ ...view, width: w, height: h }).unproject([0, h]),
-      new WebMercatorViewport({ ...view, width: w, height: h }).unproject([w, 0]),
-    ] as [number, number][];
-    const b: [number, number, number, number] = [x0, y0, x1, y1];
-    onBounds(b, areaKm2(b));
-  }, [view.longitude, view.latitude, view.zoom]);
+    if (areaBbox && onArea) onArea(areaBbox, { lon: view.longitude, lat: view.latitude });
+  }, [view.longitude, view.latitude, areaBox?.w_km, areaBox?.h_km]);
 
   const edges = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "edge"), [geometry]);
   const signals = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "signal"), [geometry]);
+  const junctions = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "junction"), [geometry]);
   const closedEdges = useMemo(() => edges.filter((f) => !(f.properties as EdgeProps).car_allowed), [edges]);
   const showArrows = view.zoom >= 15.5;
   const zStep = Math.round(view.zoom * 2) / 2;            // rebuild arrows every half zoom level
@@ -144,6 +141,13 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
     setView({ longitude: vp.longitude, latitude: vp.latitude, zoom: Math.min(vp.zoom, maxZoom), pitch: 0, bearing: 0 });
   };
 
+  // Area picker: zoom so the whole box shows whenever its size changes, and move to a typed centre
+  useEffect(() => { if (areaBbox) fit(areaBbox, 18); }, [areaBox?.w_km, areaBox?.h_km]);
+  useEffect(() => {
+    const c = areaBox?.center;
+    if (c && areaBox) fit(boxAround(c.lon, c.lat, areaBox.w_km, areaBox.h_km), 18);
+  }, [areaBox?.center?.key]);
+
   // Fit once per network (bbox); after that the user owns the camera.
   const bboxKey = geometry?.bbox?.join(",") ?? "none";
   useEffect(() => { if (geometry) fit(geometry.bbox); }, [bboxKey]);
@@ -155,7 +159,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
   }, [focus?.key]);
 
   const selectedFeature = selection
-    ? (selection.kind === "edge" ? edges : signals).find((f) => f.properties.id === selection.id) ?? null
+    ? (selection.kind === "edge" ? edges : selection.kind === "signal" ? signals : junctions).find((f) => f.properties.id === selection.id) ?? null
     : null;
 
   const edited = geometry?.edited ?? {};
@@ -176,7 +180,13 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
 
   const selectedEdges = selection?.kind === "edge" && selectedFeature ? [selectedFeature] : [];
   const hoverEdges = hoverId ? edges.filter((f) => f.properties.id === hoverId) : [];
+  const areaRing = areaBbox ? [[areaBbox[0], areaBbox[1]], [areaBbox[2], areaBbox[1]], [areaBbox[2], areaBbox[3]], [areaBbox[0], areaBbox[3]]] as [number, number][] : null;
   const layers = [
+    ...(areaRing ? [
+      new SolidPolygonLayer<{ ring: [number, number][] }>({ id: "area-fill", data: [{ ring: areaRing }], getPolygon: (d) => d.ring, getFillColor: [242, 183, 5, 40] }),
+      new PathLayer<{ ring: [number, number][] }>({ id: "area-edge", data: [{ ring: [...areaRing, areaRing[0]] }], getPath: (d) => d.ring,
+        getColor: [38, 43, 48, 230], getWidth: 2.5, widthUnits: "pixels" }),
+    ] : []),
     new PathLayer<Feature>({
       id: "halo", data: [...selectedEdges, ...hoverEdges], getPath: (f) => (f.geometry as any).coordinates,
       getColor: (f) => (f.properties.id === selection?.id ? C.halo : [242, 183, 5, 140]),
@@ -208,6 +218,18 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       id: "closed-core", data: closedEdges, getPath: (f) => (f.geometry as any).coordinates,
       getColor: C.closedCore, getWidth: 2.5, widthUnits: "pixels", capRounded: false,
     }),
+    // junctions without a signal: small hollow rings, shown when zoomed in (in layout mode only)
+    new ScatterplotLayer<Feature>({
+      id: "junctions", data: junctions, visible: mode === "layout" && view.zoom >= 15, pickable: true,
+      autoHighlight: true, highlightColor: [242, 183, 5, 255],
+      getPosition: (f) => (f.geometry as any).coordinates,
+      getRadius: (f) => (f.properties.id === hoverId ? 7 : 5), radiusUnits: "pixels", stroked: true,
+      lineWidthUnits: "pixels", getLineWidth: 1.5,
+      getFillColor: (f) => (selection?.kind === "junction" && selection.id === f.properties.id ? C.halo : [250, 251, 249, 255]),
+      getLineColor: [38, 43, 48, 255],
+      updateTriggers: { getFillColor: [selection], getRadius: [hoverId] },
+      onClick: (info) => info.object && onSelect({ kind: "junction", id: info.object.properties.id }),
+    }),
     new ScatterplotLayer<Feature>({
       id: "signals", data: signals, pickable: true, autoHighlight: true, highlightColor: [242, 183, 5, 255],
       getPosition: (f) => (f.geometry as any).coordinates,
@@ -222,7 +244,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
 
   const tooltip = (info: any) => {
     if (!info.object) return setHover(null);
-    const p = info.object.properties as EdgeProps | SignalProps;
+    const p = info.object.properties as EdgeProps | SignalProps | JunctionProps;
     let text = "";
     if (p.kind === "edge") {
       text = `${edgeLabel(p)}: ${p.lanes} lane${p.lanes === 1 ? "" : "s"}, ${Math.round(p.speed_kmh)} km/h`;
@@ -232,7 +254,8 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       const c = cmpEdges?.[p.id];
       if (mode === "change" && c?.delay_change_s != null)
         text += `. Delay ${c.delay_change_s > 0 ? "+" : "−"}${Math.abs(c.delay_change_s).toFixed(1)} s per vehicle`;
-    } else text = "Traffic signal. Click to see or change its timing";
+    } else if (p.kind === "junction") text = `Junction without a signal (${p.control.replace(/_/g, " ")}), ${p.incoming.length} roads in. Click to add a signal`;
+    else text = "Traffic signal. Click to see or change its timing";
     setHover({ x: info.x, y: info.y, text });
   };
 
@@ -251,7 +274,10 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
         layers={layers}
         pickingRadius={8}
         onHover={tooltip}
-        onClick={(info: any) => !info.object && onSelect(null)}
+        onClick={(info: any) => {
+          if (areaBox && info.coordinate) { setView((v) => ({ ...v, longitude: info.coordinate[0], latitude: info.coordinate[1] })); return; }
+          if (!info.object) onSelect(null);
+        }}
         getCursor={({ isHovering, isDragging }: any) => (isHovering ? "pointer" : isDragging ? "grabbing" : "grab")}
       >
         {(geometry?.geo || (basemap && !geometry)) && <Map mapStyle={BASEMAP} attributionControl={{ compact: true }} />}

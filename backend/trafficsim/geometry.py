@@ -46,9 +46,19 @@ def network_geojson(net_file: str, mtime: float) -> dict:
                 speed_kmh=round(e.getSpeed() * 3.6, 1), length_m=round(e.getLength(), 1),
                 road_type=(e.getType() or "").split(".")[-1], from_node=e.getFromNode().getID(),
                 to_node=e.getToNode().getID(), car_allowed=car_lanes > 0,
-                priority=e.getPriority())))
+                priority=e.getPriority(),
+                lane_width_m=round(max((ln.getWidth() for ln in e.getLanes() if ln.allows("passenger")), default=0), 2))))
     for n in net.getNodes():
         if n.getType() not in ("traffic_light", "traffic_light_right_on_red", "traffic_light_unregulated"):
+            # an unsignalled junction where a signal could go: two or more roads in for cars
+            car_in = [e for e in n.getIncoming() if any(ln.allows("passenger") for ln in e.getLanes())]
+            if len(car_in) >= 2 and n.getType() not in ("dead_end", "internal", "rail_crossing", "rail_signal"):
+                x, y = n.getCoord()
+                features.append(dict(
+                    type="Feature", geometry=dict(type="Point", coordinates=list(proj(x, y))),
+                    properties=dict(kind="junction", id=n.getID(), control=n.getType(),
+                                    incoming=[e.getID() for e in n.getIncoming()],
+                                    outgoing=[e.getID() for e in n.getOutgoing()])))
             continue
         x, y = n.getCoord()
         tls_ids = {c.getTLSID() for c in n.getConnections() if c.getTLSID()} if hasattr(n, "getConnections") else set()

@@ -353,3 +353,73 @@ def test_overpass_busy_server_is_retried_then_the_next_one_is_used(tmp_path, mon
     with pytest.raises(importer.ImportError_, match="busy right now"):
         importer.fetch_osm_bbox(bbox, tmp_path / "b.osm")
     srv.shutdown()
+
+
+def test_signal_lane_width_and_road_type_edits():
+    """Add and remove signals, change lane width and road class; the built network reflects them."""
+    import pytest
+    import sumolib
+    from trafficsim import build as b
+    from trafficsim.scenario import Scenario
+    import tempfile
+    from pathlib import Path
+    geo = c.get("/api/networks/grid3x3/geometry").json()
+    assert not [f for f in geo["features"] if f["properties"]["kind"] == "junction"]   # grid: only signals
+    s = Scenario(base_network="grid3x3", edits=[
+        {"type": "remove_signal", "node": "B1"},
+        {"type": "set_lane_width", "edge": "A0A1", "width_m": 3.5},
+        {"type": "set_road_type", "edge": "A1B1", "road_type": "local"}])
+    with tempfile.TemporaryDirectory() as d:
+        out = b.build(s, Path(d))
+        net = sumolib.net.readNet(str(out.net_file), withPrograms=True)
+        assert net.getNode("B1").getType() == "priority"
+        assert "B1" not in net._id2tls and len(net.getTrafficLights()) == 8
+        assert [ln.getWidth() for ln in net.getEdge("A0A1").getLanes()] == [3.5] * len(net.getEdge("A0A1").getLanes())
+        e = net.getEdge("A1B1")
+        assert abs(e.getSpeed() * 3.6 - 30) < 0.1 and e.getPriority() == 3
+        assert not any("B1" in w and "removed" in w for w in out.warnings)        # an intended removal is not a warning
+    # the removed signal's junction can get its signal back
+    s2 = Scenario(base_network="grid3x3", edits=[{"type": "remove_signal", "node": "B1"}, {"type": "add_signal", "node": "B1"}])
+    with tempfile.TemporaryDirectory() as d:
+        net = sumolib.net.readNet(str(b.build(s2, Path(d)).net_file), withPrograms=True)
+        assert net.getNode("B1").getType() == "traffic_light"
+    # invalid: no signal to remove at a dead end; a signal needs two roads in
+    for bad, msg in (({"type": "remove_signal", "node": "bottom0"}, "no signal"),
+                     ({"type": "add_signal", "node": "bottom0"}, "at least two roads"),
+                     ({"type": "add_signal", "node": "A0"}, "already has")):
+        with tempfile.TemporaryDirectory() as d, pytest.raises(b.EditError, match=msg):
+            b.build(Scenario(base_network="grid3x3", edits=[bad]), Path(d))
+    # through the API: a scenario with a removed signal shows a junction there, and runs
+    base = [x for x in c.get("/api/scenarios").json() if x["base_network"] == "grid3x3" and x.get("baseline")]
+    sid = (base[0] if base else c.post("/api/networks/grid3x3/baseline").json())["id"]
+    alt = c.post(f"/api/scenarios/{sid}/copy").json()
+    r = c.put(f"/api/scenarios/{alt['id']}", json={"edits": [{"type": "remove_signal", "node": "B1"}]})
+    assert r.status_code == 200, r.text
+    g = c.get(f"/api/scenarios/{alt['id']}/geometry").json()
+    kinds = {f["properties"]["id"]: f["properties"]["kind"] for f in g["features"] if f["properties"]["kind"] != "edge"}
+    assert kinds["B1"] == "junction" and g["edited"].get("B1") == ["remove_signal"]
+
+
+def test_results_library_lists_finished_simulations_with_headlines():
+    base = [x for x in c.get("/api/scenarios").json() if x["base_network"] == "grid3x3" and x.get("baseline")]
+    ref = (base[0] if base else c.post("/api/networks/grid3x3/baseline").json())["id"]
+    alt = c.post(f"/api/scenarios/{ref}/copy").json()["id"]
+    c.put(f"/api/scenarios/{alt}", json={"controller": "actuated"})
+    sim = c.post("/api/simulations", json={"reference": ref, "alternatives": [alt], "seeds": [1, 2]}).json()
+    for _ in range(600):
+        st = c.get(f"/api/simulations/{sim['id']}").json()
+        if st["state"] != "running":
+            break
+        time.sleep(0.5)
+    assert st["state"] == "done"
+    rows = {r["id"]: r for r in c.get("/api/results").json()}
+    r = rows[sim["id"]]
+    a = r["alternatives"][0]
+    assert a["scenario_id"] == alt and a["controller"] == "actuated" and a["n"] == 2
+    assert a["after_s"] < a["before_s"] and a["verdict"] == "better"        # actuated beats fixed on the grid
+    assert c.get("/api/results", params={"network": "corridor5"}).json() == [] or sim["id"] not in {
+        x["id"] for x in c.get("/api/results", params={"network": "corridor5"}).json()}
+    # cached: a second call reads the stored summary; removing the simulation removes it
+    assert c.get("/api/results").json()[0]["alternatives"]
+    c.delete(f"/api/simulations/{sim['id']}")
+    assert sim["id"] not in {x["id"] for x in c.get("/api/results").json()}

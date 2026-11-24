@@ -2,24 +2,107 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type MapMode, type Selection } from "../MapView";
 import Results, { fmt, quality } from "../Results";
-import { Legend, ReproCheck, RunFacts, SelectedCard, TopRoads, controllerName, when, type Expected, type Side } from "../shared";
+import { Legend, ReproCheck, RunFacts, SelectedCard, TopRoads, controllerName, listNav, when, type Expected, type Side } from "../shared";
 import { signalLabel } from "./NetworkExplorer";
-import type { Comparison, EdgeProps, Geometry, Network, Run, Simulation, SignalProps } from "../types";
+import type { Comparison, EdgeProps, Geometry, Network, ResultSummary, Run, Simulation, SignalProps } from "../types";
 
 type Props = {
   sims: Simulation[];
   networks: Network[];
   selected: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onEditScenario: (id: string) => void;
+  onOpenFile: () => void;
+  onExperiment: (simId: string) => void;
   fail: (e: unknown) => void;
 };
 
+/** Results & Analytics: a table of every finished simulation; picking one opens its comparison. */
+export default function ResultsPage(props: Props) {
+  const sim = props.sims.find((s) => s.id === props.selected && s.state === "done");
+  return sim ? <ResultDetail {...props} sim={sim} /> : <ResultsLibrary {...props} />;
+}
+
+function ResultsLibrary({ networks, onSelect, onOpenFile, onExperiment, sims, fail }: Props) {
+  const [rows, setRows] = useState<ResultSummary[] | null>(null);
+  const [net, setNet] = useState("all");
+  const [q, setQ] = useState("");
+  const doneCount = sims.filter((s) => s.state === "done").length;
+  useEffect(() => { api.results().then(setRows).catch(fail); }, [doneCount]);
+  const netName = (id: string) => networks.find((n) => n.id === id)?.name ?? id;
+  const shown = (rows ?? []).filter((r) => (net === "all" || r.network === net) &&
+    (!q || `${r.name} ${r.reference_name} ${r.alternatives.map((a) => a.scenario_name).join(" ")}`.toLowerCase().includes(q.toLowerCase())));
+
+  return (
+    <main className="work page-only">
+      <section className="page wide">
+        <div className="page-head">
+          <h1>Results &amp; Analytics</h1>
+          <p className="lead">Every finished simulation. Open one to see the map, the measures and the roads that changed most.</p>
+        </div>
+        <div className="row spread page-tools">
+          <div className="row nowrap">
+            <input type="search" className="text" value={q} placeholder="Search by scenario name" aria-label="Search results" onChange={(e) => setQ(e.target.value)} />
+            <select value={net} onChange={(e) => setNet(e.target.value)} aria-label="Network">
+              <option value="all">All networks</option>
+              {networks.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+            </select>
+          </div>
+          <button className="btn secondary small" onClick={onOpenFile}>Open a saved experiment file</button>
+        </div>
+        {!rows && <p className="status-line" role="status"><span className="spinner" aria-hidden="true" />Loading results…</p>}
+        {rows && shown.length === 0 && <p className="small muted">{rows.length ? "No results match." : "No finished simulations yet. Run one in Traffic Simulation."}</p>}
+        {shown.length > 0 && (
+          <table className="library">
+            <thead>
+              <tr>
+                <th scope="col">Simulation</th>
+                <th scope="col">Network</th>
+                <th scope="col">Scenario tested</th>
+                <th scope="col" className="n-col">Travel time vs reference</th>
+                <th scope="col" className="n-col">Runs better</th>
+                <th scope="col" className="n-col">Teleports</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody onKeyDown={listNav}>
+              {shown.map((r) => r.alternatives.map((a, i) => (
+                <tr key={`${r.id}-${a.run_id}`} className={i > 0 ? "cont" : ""}>
+                  {i === 0 && (
+                    <th scope="rowgroup" rowSpan={r.alternatives.length}>
+                      <span className="lib-name">{r.name}</span>
+                      <span className="lib-sub">{when(r.created)} · {r.seeds.length} runs{r.depart_jitter_s ? `, starts ±${Math.round(r.depart_jitter_s / 60)} min` : ""}{r.rerun_of ? " · run again" : ""}</span>
+                    </th>
+                  )}
+                  {i === 0 && <td rowSpan={r.alternatives.length}>{netName(r.network)}</td>}
+                  <td>{a.scenario_name}<span className="lib-sub">vs {r.reference_name}{a.controller && a.controller !== "fixed" ? ` · ${controllerName(a.controller)}` : ""}</span></td>
+                  <td className="n-col">
+                    <span className={`chg ${a.verdict === "better" ? "better" : a.verdict === "worse" ? "worse" : "same"}`}>{a.diff_s != null ? fmt(a.diff_s, "s", true) : "–"}</span>
+                    {a.pct != null && <span className="muted small"> ({a.pct > 0 ? "+" : "−"}{Math.abs(a.pct).toFixed(1)}%)</span>}
+                  </td>
+                  <td className="n-col">{a.n ? `${a.better} of ${a.n}` : "–"}</td>
+                  <td className="n-col">{a.teleports_after != null ? Math.round(a.teleports_after) : "–"}</td>
+                  {i === 0 && (
+                    <td rowSpan={r.alternatives.length} className="lib-actions">
+                      <button className="btn secondary small" onClick={() => onSelect(r.id)}>Open</button>
+                      <button className="btn quiet small" onClick={() => onExperiment(r.id)}>Details</button>
+                    </td>
+                  )}
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        )}
+        <p className="small muted">Travel time is the average per trip on the trips that finished normally in both scenarios. Teleports are vehicles SUMO removed from a jam (average per run).</p>
+      </section>
+    </main>
+  );
+}
+
 type AltResult = { runs: Partial<Record<Side, Run>>; cmp: Comparison };
 
-export default function ResultsPage({ sims, networks, selected, onSelect, onEditScenario, fail }: Props) {
+function ResultDetail({ sims, networks, sim, onSelect, onEditScenario, onExperiment, fail }: Props & { sim: Simulation }) {
   const done = sims.filter((s) => s.state === "done");
-  const sim = sims.find((s) => s.id === selected) ?? done[0] ?? null;
   const [results, setResults] = useState<Record<string, AltResult>>({});
   const [alt, setAlt] = useState<string | null>(null);
   const [expected, setExpected] = useState<Record<string, Expected> | null>(null);
@@ -94,13 +177,6 @@ export default function ResultsPage({ sims, networks, selected, onSelect, onEdit
   const labels = { before: sim?.reference.scenario_name ?? "Reference", after: part?.scenario_name ?? "Scenario" };
   const netName = (id: string) => networks.find((n) => n.id === id)?.name ?? id;
 
-  if (!sim)
-    return (
-      <main className="work page-only"><section className="page">
-        <div className="page-head"><h1>Results &amp; Analytics</h1></div>
-        <p className="lead">No finished simulations yet. Run one in Traffic Simulation.</p>
-      </section></main>
-    );
 
   return (
     <main className="work">
@@ -123,6 +199,10 @@ export default function ResultsPage({ sims, networks, selected, onSelect, onEdit
       <aside className="panel">
         <div className="panel-body">
           <section className="step">
+            <div className="row spread">
+              <button className="btn quiet small" onClick={() => onSelect(null)}>← All results</button>
+              <button className="btn quiet small" onClick={() => onExperiment(sim.id)}>Experiment details</button>
+            </div>
             <h2>Results &amp; Analytics</h2>
             <label className="field block">
               <span className="label">Simulation</span>

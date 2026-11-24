@@ -3,6 +3,7 @@ import { api } from "./api";
 import Results, { fmt } from "./Results";
 import { controllerName, when, listNav } from "./shared";
 import type { Comparison, Network, Run, RunSummary, Simulation } from "./types";
+import ExperimentDetail from "./ExperimentDetail";
 
 /** Pair each proposal run with the run of its parent scenario that used the same seeds and started closest
  *  in time. Used only for runs made before simulations were stored (older versions of the app). */
@@ -23,11 +24,20 @@ export function pairRuns(runs: RunSummary[]) {
 }
 
 type Props = {
-  sims: Simulation[]; networks: Network[];
-  onOpen: (simId: string) => void; onChanged: () => void; onOpenFile: () => void; fail: (e: unknown) => void;
+  sims: Simulation[]; networks: Network[]; selected: string | null; onSelect: (id: string | null) => void;
+  onOpen: (simId: string) => void; onScenario: (scenarioId: string) => void;
+  onChanged: () => void; onOpenFile: () => void; fail: (e: unknown) => void;
 };
 
-export default function Experiments({ sims, networks, onOpen, onChanged, onOpenFile, fail }: Props) {
+export default function Experiments(props: Props) {
+  const sim = props.sims.find((s) => s.id === props.selected);
+  return sim
+    ? <ExperimentDetail sim={sim} sims={props.sims} networks={props.networks} onBack={() => props.onSelect(null)} onResults={props.onOpen}
+        onScenario={props.onScenario} onOpenExperiment={props.onSelect} onChanged={props.onChanged} fail={props.fail} />
+    : <ExperimentList {...props} />;
+}
+
+function ExperimentList({ sims, networks, onSelect, onOpen, onChanged, onOpenFile, fail }: Props) {
   const [tab, setTab] = useState<"sims" | "runs">("sims");
   const [net, setNet] = useState("all");
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
@@ -54,7 +64,7 @@ export default function Experiments({ sims, networks, onOpen, onChanged, onOpenF
       <section className="page">
         <div className="page-head">
           <h1>Experiments &amp; History</h1>
-          <p className="lead">Every simulation you ran. Open its results, run it again to check the numbers reproduce, or compare any two runs.</p>
+          <p className="lead">Every simulation you ran. Open one to see what was compared, how it was run, its results and whether it reproduces.</p>
         </div>
         <div className="row spread page-tools">
           <div className="seg" role="tablist" aria-label="View">
@@ -77,11 +87,12 @@ export default function Experiments({ sims, networks, onOpen, onChanged, onOpenF
                     <span className="exp-when">{when(s.created)}{s.rerun_of && " · run again"}</span>
                     {s.state !== "done" && <span className={`status ${s.state}`}>{{ running: "Running", failed: "Failed", cancelled: "Cancelled", missing: "Unavailable", done: "" }[s.state]}</span>}
                   </div>
-                  <p className="exp-title">{s.name}</p>
+                  <p className="exp-title"><button className="link strong" onClick={() => onSelect(s.id)}>{s.name}</button></p>
                   <p className="small">{netName(s.network)}. Reference: {s.reference.scenario_name}. Tested: {s.alternatives.map((a) => a.scenario_name).join(", ")}.</p>
                   <p className="small muted">{s.seeds.length} runs each{s.depart_jitter_s ? `, start times ±${s.depart_jitter_s} s` : ""}.</p>
                   <div className="row">
-                    {s.state === "done" && <button className="btn secondary small" onClick={() => onOpen(s.id)}>Open results</button>}
+                    <button className="btn secondary small" onClick={() => onSelect(s.id)}>View details</button>
+                    {s.state === "done" && <button className="btn quiet small" onClick={() => onOpen(s.id)}>Results</button>}
                     {s.state === "done" && <button className="btn quiet small" onClick={async () => { try { await api.rerunSimulation(s.id); onChanged(); } catch (e) { fail(e); } }}>Run again</button>}
                     {s.state !== "running" && confirm !== s.id && <button className="btn quiet small" onClick={() => setConfirm(s.id)}>Remove</button>}
                     {confirm === s.id && (
