@@ -290,3 +290,27 @@ def test_simulation_rerun_reproduces():
     assert again["rerun_of"] == sim["id"] and again["state"] == "done"
     v = lambda st: c.get(f"/api/runs/{st['alternatives'][0]['run_id']}").json()["aggregate"]["kpis"]["mean_travel_time_s"]["values"]
     assert v(first) == v(again)
+
+
+def test_every_signal_marker_has_an_editable_plan():
+    """Junctions typed as traffic lights but without any signal-controlled lane (3 in RESCO
+    Ingolstadt21) run as priority junctions, so they must not be drawn as signals."""
+    import pytest
+    for nid in ("grid3x3", "ingolstadt21"):
+        r = c.get(f"/api/networks/{nid}/geometry")
+        if r.status_code != 200:
+            pytest.skip(f"{nid} not available")
+        sigs = [f["properties"] for f in r.json()["features"] if f["properties"]["kind"] == "signal"]
+        plans = c.get(f"/api/networks/{nid}/signals").json()
+        assert sigs and all(any(t in plans for t in s["tls"]) for s in sigs), nid
+        assert len(sigs) == len(plans), nid
+
+
+def test_failed_seed_reports_the_error_not_a_cut_traceback():
+    from trafficsim.jobs import SeedFailed
+    tb = ('Traceback (most recent call last):\n  File "<frozen runpy>", line 88, in _run_code\n'
+          '  File "runner.py", line 87, in run_seed\n'
+          "RuntimeError: SUMO stopped with an error. Error: Vehicle 'v1' has no valid route.\n")
+    e = SeedFailed(7, tb)
+    assert str(e) == "Run with seed 7 failed: SUMO stopped with an error. Error: Vehicle 'v1' has no valid route."
+    assert "Traceback" in e.output

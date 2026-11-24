@@ -30,6 +30,7 @@ def network_geojson(net_file: str, mtime: float) -> dict:
     """mtime is part of the cache key so a rebuilt network is re-read."""
     net = sumolib.net.readNet(net_file, withPrograms=True)
     proj, geo = _projector(net)
+    programs = {t.getID() for t in net.getTrafficLights()}
     features = []
     for e in net.getEdges(withInternal=False):
         if e.getFunction() == "internal":
@@ -51,6 +52,10 @@ def network_geojson(net_file: str, mtime: float) -> dict:
             continue
         x, y = n.getCoord()
         tls_ids = {c.getTLSID() for c in n.getConnections() if c.getTLSID()} if hasattr(n, "getConnections") else set()
+        if not tls_ids and n.getID() not in programs:
+            # typed as a traffic light but nothing is signal-controlled (e.g. 3 junctions in RESCO
+            # Ingolstadt21): SUMO runs it as a priority junction, so don't draw it as a signal
+            continue
         features.append(dict(
             type="Feature", geometry=dict(type="Point", coordinates=list(proj(x, y))),
             properties=dict(kind="signal", id=n.getID(), tls=sorted(tls_ids) or [n.getID()],
