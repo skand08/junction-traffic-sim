@@ -131,20 +131,27 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
                 <button className="btn secondary small" onClick={() => setAdding("area")}>Add network</button>
               </div>
               <p className="lead">Your road networks. Add one from OpenStreetMap or a SUMO file, then build scenarios on it.</p>
-              <div className="nets" role="listbox" aria-label="Networks" onKeyDown={listNav}>
-                {networks.map((n) => (
-                  <button key={n.id} role="option" aria-selected={n.id === selected} className="net" onClick={() => onSelect(n.id)}>
-                    <span className="net-name">{n.name}{n.kind === "imported" && <span className="chip">imported</span>}</span>
-                    <span className="net-desc">{n.description}</span>
-                    {n.edges != null && <span className="net-stats">{n.signals} signals, {n.edges} roads, {n.trips?.toLocaleString()} trips</span>}
-                    {n.note && <span className="net-note">{n.note}</span>}
-                  </button>
-                ))}
-              </div>
+              <label className="field block">
+                <span className="label">Network</span>
+                <select value={selected ?? ""} onChange={(e) => onSelect(e.target.value || null)} aria-label="Network">
+                  {!selected && <option value="">Choose a network…</option>}
+                  <optgroup label="Built in">
+                    {networks.filter((n) => n.kind !== "imported").map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                  </optgroup>
+                  {networks.some((n) => n.kind === "imported") && (
+                    <optgroup label="Imported">
+                      {networks.filter((n) => n.kind === "imported").map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                    </optgroup>
+                  )}
+                </select>
+              </label>
 
               {net && (
                 <div className="card net-current">
-                  <p className="big">{net.name}</p>
+                  <p className="big">{net.name}{net.kind === "imported" && <span className="chip">imported</span>}</p>
+                  <p className="net-desc">{net.description}</p>
+                  {net.edges != null && <p className="net-stats">{net.signals} signal{net.signals === 1 ? "" : "s"}, {net.edges.toLocaleString()} roads, {net.trips?.toLocaleString()} trips</p>}
+                  {net.note && <p className="net-note">{net.note}</p>}
                   {net.license && <p className="small muted">Data: {net.license}</p>}
                   <div className="row">
                     <button className="primary" onClick={() => onBuildScenario(net.id)}>Build a scenario on this network</button>
