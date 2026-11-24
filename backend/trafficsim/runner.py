@@ -27,6 +27,41 @@ MP_DECISION = 5     # s between max-pressure decisions
 MP_MAX_WAIT = 90    # s a phase with waiting cars may go unserved before it is forced
 MP_AMBER = 3        # s amber for movements losing green
 MP_ALL_RED = 2      # s all-red clearance
+MP_REACH_M = 60     # m of road counted on each side of a signal, following lanes through short pieces
+
+
+def _lane_reach(net_file: str) -> tuple[dict, dict]:
+    """For every lane, the lanes within MP_REACH_M downstream (fwd) and upstream (back) of it.
+
+    Pressure compares queues before and after a signal. On real networks the lane right after a
+    signal is often a 0-3 m piece between two nodes of one junction cluster; it never holds a queue,
+    so a controller looking only at it sends traffic into roads that are already full."""
+    import sumolib
+    net = sumolib.net.readNet(net_file)
+    succ, pred, length = {}, {}, {}
+    for e in net.getEdges(withInternal=False):
+        for ln in e.getLanes():
+            length[ln.getID()] = ln.getLength()
+            for c in ln.getOutgoing():
+                a, b = ln.getID(), c.getToLane().getID()
+                succ.setdefault(a, []).append(b)
+                pred.setdefault(b, []).append(a)
+
+    def walk(start, nxt):
+        seen, frontier, got = [start], [(start, length.get(start, 0.0))], {start}
+        while frontier:
+            lane, dist = frontier.pop(0)
+            if dist >= MP_REACH_M:
+                continue
+            for n in nxt.get(lane, []):
+                if n not in got and len(got) < 12:
+                    got.add(n)
+                    seen.append(n)
+                    frontier.append((n, dist + length.get(n, 0.0)))
+        return seen
+
+    lanes = list(length)
+    return {ln: walk(ln, succ) for ln in lanes}, {ln: walk(ln, pred) for ln in lanes}
 
 
 def _demand_for_seed(job: dict, out: Path) -> str:
@@ -95,6 +130,7 @@ def _is_green(state: str) -> bool:
 
 def _run_max_pressure(job: dict, out: Path):
     import libsumo as ls
+    fwd, back = _lane_reach(job["net_file"])
     ls.start(["sumo", *_common_args(job, out)])
     try:
         ctrl = {}
@@ -129,10 +165,16 @@ def _run_max_pressure(job: dict, out: Path):
             now = ls.simulation.getTime()
             halting = {}
 
-            def h(lane):
+            def h1(lane):
                 if lane not in halting:
                     halting[lane] = ls.lane.getLastStepHaltingNumber(lane)
                 return halting[lane]
+
+            def h_in(lane):        # queue waiting to use this movement, over the road before the signal
+                return sum(h1(x) for x in back.get(lane, [lane]))
+
+            def h_out(lane):       # queue already on the road the movement feeds
+                return sum(h1(x) for x in fwd.get(lane, [lane]))
 
             for tid, c in ctrl.items():
                 if c["until"] is not None:                      # in an amber/all-red transition
@@ -150,10 +192,10 @@ def _run_max_pressure(job: dict, out: Path):
                 c["served"][c["cur"]] = now
                 if now - c["since"] < MP_MIN_GREEN or int(now) % MP_DECISION:
                     continue
-                pressure = {g: sum(h(i) - h(o) for i, o in c["mov"][g]) for g in c["greens"]}
+                pressure = {g: sum(h_in(i) - h_out(o) for i, o in c["mov"][g]) for g in c["greens"]}
                 # starvation guard: a phase with waiting cars gets green after MP_MAX_WAIT seconds
                 starved = [g for g in c["greens"] if g != c["cur"] and now - c["served"][g] > MP_MAX_WAIT
-                           and sum(h(i) for i, _ in c["mov"][g]) > 0]
+                           and sum(h1(i) for i, _ in c["mov"][g]) > 0]
                 if starved:
                     best = max(starved, key=lambda g: now - c["served"][g])
                 else:
