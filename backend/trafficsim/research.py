@@ -20,6 +20,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from . import analysis, build, config, scenario as sc
+from .external import ExternalCfg, check_url
 from .jobs import Cancelled, run_seed_subprocess, versions
 
 BENCH_DIR = config.WORKSPACE_DIR / "research" / "benchmarks"
@@ -39,8 +40,9 @@ MEASURES = {
 
 
 class ControllerSpec(BaseModel):
-    kind: Literal["fixed", "actuated", "max_pressure", "rl"]
+    kind: Literal["fixed", "actuated", "max_pressure", "rl", "external"]
     agent_id: Optional[str] = None
+    external: Optional[ExternalCfg] = None   # with kind "external": your controller's address and settings
     checkpoint: str = "final"             # final | best | ep_NNNN.npz
     label: Optional[str] = None
 
@@ -63,6 +65,8 @@ def _label(c: ControllerSpec, names: dict) -> str:
     base = {"fixed": "Fixed timing", "actuated": "Vehicle-actuated", "max_pressure": "Pressure-based"}.get(c.kind)
     if base:
         return base
+    if c.kind == "external":
+        return c.external.name if c.external else "External controller"
     return f"RL: {names.get(c.agent_id, c.agent_id)}" + ("" if c.checkpoint == "final" else f" ({c.checkpoint.replace('.npz', '')})")
 
 
@@ -130,6 +134,10 @@ class BenchmarkManager:
                 names[c.agent_id] = info["config"]["name"]
                 models[f"{c.agent_id}/{c.checkpoint}"] = dict(file=str(p), sha=_sha(p), config=info["config"],
                                                               manifest=info["manifest"])
+            if c.kind == "external":
+                if not c.external:
+                    raise ValueError("Give the external controller's address.")
+                check_url(c.external.url)
         if not 0 <= cfg.reference < len(cfg.controllers):
             raise ValueError("The reference must be one of the controllers.")
         bid = uuid.uuid4().hex[:10]
@@ -141,7 +149,9 @@ class BenchmarkManager:
         manifest = dict(id=bid, created=time.time(), versions=versions(), seeds=seeds, labels=labels,
                         scenarios=[dict(id=s.id, name=s.name, network=s.base_network, edits=[e.model_dump() for e in s.edits],
                                         demand_scale=s.demand_scale) for s in scen],
-                        models=models, depart_jitter_s=cfg.depart_jitter_s)
+                        models=models, depart_jitter_s=cfg.depart_jitter_s,
+                        external=[dict(label=labels[i], **c.external.model_dump()) for i, c in enumerate(cfg.controllers)
+                                  if c.kind == "external"])
         (d / "manifest.json").write_text(json.dumps(manifest, indent=1))
         total = len(scen) * len(cfg.demand_levels) * len(cfg.controllers) * len(seeds)
         self._status(bid, state="queued", done=0, total=total, created=time.time())
@@ -168,12 +178,14 @@ class BenchmarkManager:
                                     seed_results=[], errors=[])
                         cells.append(cell)
                         out = d / "runs" / f"{len(cells):03d}"
-                        s2 = s.model_copy(update=dict(controller=c.kind if c.kind != "rl" else "fixed"))
+                        s2 = s.model_copy(update=dict(controller=c.kind if c.kind not in ("rl", "external") else "fixed"))
                         b = build.build(s2, out)
                         base = dict(net_file=str(b.net_file), demand_file=str(b.demand_file),
                                     tls_additional=str(b.tls_additional) if b.tls_additional else None,
                                     begin=b.begin, end=b.end, scale=round(s.demand_scale * level, 4),
                                     controller=c.kind, depart_jitter_s=cfg.depart_jitter_s, research=True)
+                        if c.kind == "external":
+                            base["external"] = c.external.model_dump()
                         if c.kind == "rl":
                             base["rl_model"] = str(self.model_path(c.agent_id, c.checkpoint))
                         for k in seeds:

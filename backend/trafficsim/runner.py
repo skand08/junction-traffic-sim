@@ -254,6 +254,26 @@ def _run_rl(job: dict, out: Path):
         ls.close()
 
 
+def _run_external(job: dict, out: Path) -> dict:
+    """An external service picks the greens (see external.py); Junction applies the safety rules."""
+    import libsumo as ls
+    from .external import ExternalController
+    ls.start(["sumo", *_common_args(job, out)])
+    ctrl = None
+    try:
+        ctrl = ExternalController(ls, job["net_file"], job["external"],
+                                  run_info=dict(seed=job["seed"], begin_s=job["begin"], end_s=job["end"]))
+        end = job["end"] + config.DRAIN_S
+        while ls.simulation.getTime() < end:
+            ls.simulationStep()
+            ctrl.step()
+        return ctrl.summary()
+    finally:
+        if ctrl is not None:
+            ctrl.close()
+        ls.close()
+
+
 TELEPORT_RE = re.compile(r"Teleporting vehicle '([^']+)'")
 # per-trip status codes stored with each seed result
 NORMAL, TELEPORTED, UNFINISHED, REMOVED = 0, 1, 2, 3
@@ -347,9 +367,13 @@ def run_seed(job: dict) -> dict:
         _run_max_pressure(job, out)
     elif job["controller"] == "rl":
         _run_rl(job, out)
+    elif job["controller"] == "external":
+        ext = _run_external(job, out)
     else:
         _run_native(job, out)
     res = _parse(job, out)
+    if job["controller"] == "external":
+        res["controller_stats"] = ext
     res.update(seed=job["seed"], wall_s=round(time.perf_counter() - t0, 2))
     for f in ("tripinfo.xml", "sumo.log", "demand.rou.xml", "summary.xml"):          # large; keep edges.xml and stats.xml
         try:

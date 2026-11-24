@@ -25,6 +25,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from . import config
+from .external import ExternalCfg
 
 # ---------- configuration (what the user picks) ----------
 
@@ -56,8 +57,9 @@ class LiveRoute(BaseModel):
 
 class LiveConfig(BaseModel):
     scenario_id: str
-    controller: Optional[Literal["fixed", "actuated", "max_pressure", "rl"]] = None   # None: the scenario's own
+    controller: Optional[Literal["fixed", "actuated", "max_pressure", "rl", "external"]] = None   # None: the scenario's own
     rl_agent: Optional[str] = None             # trained agent id, with controller "rl"
+    external: Optional[ExternalCfg] = None     # with controller "external": your controller's address
     rl_checkpoint: str = "final"
     intensity: Literal["low", "medium", "high"] = "medium"
     profile: Literal["normal", "morning", "evening"] = "normal"
@@ -165,6 +167,14 @@ def _worker(job: dict, conn):
         from .rl.policy import RLController
         try:
             rl = RLController(ls, job["net_file"], job["rl_model"])
+        except Exception as e:  # noqa: BLE001
+            conn.send(dict(kind="error", error=str(e)))
+            ls.close()
+            return
+    if job["controller"] == "external":
+        from .external import ExternalController
+        try:
+            rl = ExternalController(ls, job["net_file"], job["external"], run_info=dict(live=True, seed=job["seed"]))
         except Exception as e:  # noqa: BLE001
             conn.send(dict(kind="error", error=str(e)))
             ls.close()
@@ -291,6 +301,8 @@ def _worker(job: dict, conn):
         except Exception:  # noqa: BLE001
             pass
     finally:
+        if rl is not None and hasattr(rl, "close"):
+            rl.close()                       # tells an external controller the run ended
         try:
             ls.close()
         except Exception:  # noqa: BLE001

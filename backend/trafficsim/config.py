@@ -27,6 +27,8 @@ for d in (NETWORKS_DIR, WORKSPACE_DIR):
 DEFAULT_SEEDS = 10
 DRAIN_S = 1800          # extra simulated time after the demand window so trips can finish
 STEP_LENGTH = 1.0
+# hosts an external signal controller may run on (comma separated); keep this narrow on a shared server
+CONTROLLER_HOSTS = os.environ.get("JUNCTION_CONTROLLER_HOSTS", "localhost,127.0.0.1,::1")
 MAX_WORKERS = int(os.environ.get("TRAFFICSIM_WORKERS", max(1, (os.cpu_count() or 2) - 1)))
 
 

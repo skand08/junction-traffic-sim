@@ -5,8 +5,9 @@ import MapView, { C, delayColor, edgeLabel, featureBBox, type RGBA, type Selecti
 import { CONTROLLERS } from "../shared";
 import FindList from "../FindList";
 import { itemsFor, junctionLabel, signalLabel } from "./NetworkExplorer";
+import ExternalPicker, { rememberController, savedControllers } from "../ExternalPicker";
 import type {
-  AgentInfo, Controller, EdgeProps, Feature, Geometry, JunctionProps, LiveFrame, LiveInfo, LiveRoute, LiveSetup, LiveStatic,
+  AgentInfo, Controller, EdgeProps, ExternalCfg, Feature, Geometry, JunctionProps, LiveFrame, LiveInfo, LiveRoute, LiveSetup, LiveStatic,
   LiveVehicle, Network, Scenario, SignalProps,
 } from "../types";
 
@@ -78,7 +79,8 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
   // ---------- setup ----------
   const [nid, setNid] = useState(preset?.network ?? "");
   const [sid, setSid] = useState(preset?.scenario ?? "");
-  const [controller, setController] = useState<Controller | "rl" | "">(presetAgent ? "rl" : "");
+  const [controller, setController] = useState<Controller | "rl" | "external" | "">(presetAgent ? "rl" : "");
+  const [ext, setExt] = useState<ExternalCfg>(() => savedControllers()[0] ?? { url: "http://localhost:9000/", name: "My controller" });
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [rlAgent, setRlAgent] = useState<string>(presetAgent ?? "");
   const [rlCkpt, setRlCkpt] = useState("final");
@@ -196,7 +198,9 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
     setBusy(true);
     try {
       if (controller === "rl" && !rlAgent) throw new Error("Choose a trained agent.");
+      if (controller === "external") rememberController(ext);
       const i = await api.liveStart({ scenario_id: sid, controller: controller || null, rl_agent: controller === "rl" ? rlAgent : null,
+        external: controller === "external" ? ext : null,
         rl_checkpoint: rlCkpt, intensity, profile, mix, duration_min: duration, routes });
       sessionStorage.setItem(SESSION, i.id);
       setFrame(null); prev.current = { f: null, at: 0, dt: 250 };
@@ -406,8 +410,15 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                   ))}
                   <button role="radio" aria-checked={controller === "rl"} disabled={!agents.length} onClick={() => setController("rl")}
                     title={agents.length ? "A trained agent controls the signals" : "Train an agent in Research first"}>RL agent</button>
+                  <button role="radio" aria-checked={controller === "external"} onClick={() => setController("external")}
+                    title="Your own controller, running as a web service">External</button>
                 </div>
-                {controller === "rl" ? (
+                {controller === "external" ? (
+                  <div className="rl-pick">
+                    <ExternalPicker value={ext} onChange={setExt} compact />
+                    <span className="small muted">Your service picks each next green; Junction adds amber and all-red. See Research, Your own code.</span>
+                  </div>
+                ) : controller === "rl" ? (
                   <div className="rl-pick">
                     <select value={rlAgent} onChange={(e) => { setRlAgent(e.target.value); setRlCkpt("final"); }} aria-label="Trained agent">
                       <option value="">Choose a trained agent…</option>
@@ -474,7 +485,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                 <span className={`status ${frame?.state ?? "starting"}`}>{{ starting: "Starting", running: "Running", paused: "Paused", finished: "Finished", failed: "Failed" }[frame?.state ?? "starting"]}</span>
               </div>
               <p className="small muted">
-                {networks.find((n) => n.id === info.network)?.name}. {info.controller === "rl" ? `RL agent ${info.rl_agent ?? ""}` : CONTROLLERS.find((c) => c.id === info.controller)?.name}; {INTENSITY.find((x) => x[0] === info.config.intensity)?.[1].toLowerCase()} traffic, {PROFILE.find((x) => x[0] === info.config.profile)?.[1].toLowerCase()} profile, {info.config.duration_min} min{info.config.routes.length ? `, ${info.config.routes.length} extra route${info.config.routes.length > 1 ? "s" : ""}` : ""}.
+                {networks.find((n) => n.id === info.network)?.name}. {info.controller === "rl" ? `RL agent ${info.rl_agent ?? ""}` : info.controller === "external" ? `External controller ${info.external ?? ""}` : CONTROLLERS.find((c) => c.id === info.controller)?.name}; {INTENSITY.find((x) => x[0] === info.config.intensity)?.[1].toLowerCase()} traffic, {PROFILE.find((x) => x[0] === info.config.profile)?.[1].toLowerCase()} profile, {info.config.duration_min} min{info.config.routes.length ? `, ${info.config.routes.length} extra route${info.config.routes.length > 1 ? "s" : ""}` : ""}.
               </p>
               {k && k.teleports > 0 && <p className="banner-inline warn">{k.teleports} vehicle{k.teleports > 1 ? "s were" : " was"} stuck for 5 minutes and removed from a jam by SUMO. Read congestion numbers with care.</p>}
               {info.warnings.length > 0 && <details className="small"><summary>{info.warnings.length} build note{info.warnings.length > 1 ? "s" : ""}</summary><ul>{info.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details>}
@@ -537,7 +548,7 @@ function Spark({ hist, begin, stop }: { hist: LiveFrame["hist"]; begin: number; 
 
 function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }: {
   sel: NonNullable<Selection>; frame: LiveFrame | null; geo: Geometry | null; edgeProps: Record<string, EdgeProps>;
-  roadName: (id: string) => string; controller: Controller | "rl"; onClose: () => void;
+  roadName: (id: string) => string; controller: Controller | "rl" | "external"; onClose: () => void;
 }) {
   const w = frame?.watch;
   const head = (title: string) => <div className="row spread"><h3>{title}</h3><button className="btn quiet small" onClick={onClose}>Close</button></div>;
@@ -599,6 +610,8 @@ function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }
               ? "Pressure-based control has no fixed plan: every 5 s it gives green to the movements with the longest queues relative to the space beyond."
               : controller === "rl"
               ? "The trained agent picks the next green every few seconds; amber and all-red are added for safety."
+              : controller === "external"
+              ? "Your controller picks the next green every few seconds; Junction adds amber and all-red for safety."
               : <>Phase {t.phase + 1} of {t.phases.length}{t.next_switch_s != null ? `, changes in ${t.next_switch_s} s` : ""}.{controller === "actuated" ? " Greens stretch or end early with demand." : ""}</>}
           </p>
           <table className="compact">
@@ -613,22 +626,22 @@ function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }
               ))}
             </tbody>
           </table>
-          {controller === "rl" && t.agent && (
+          {(controller === "rl" || controller === "external") && t.agent && (
             <div className="agent-dec">
-              <p className="small"><b>Agent's last decision</b> at {clock(t.agent.t)}: {t.agent.held ? "keep" : "switch to"} phase option {t.agent.chosen + 1}.
-                {t.agent.kind === "value" ? " Bars: estimated value of each option (higher is better)." : " Bars: probability of each option."}</p>
-              {(() => { const lo = Math.min(...t.agent!.values), hi = Math.max(...t.agent!.values), span = hi - lo || 1;
+              <p className="small"><b>{controller === "rl" ? "Agent's" : "Controller's"} last decision</b> at {clock(t.agent.t)}: {t.agent.held ? "keep" : "switch to"} phase option {t.agent.chosen + 1}.
+                {t.agent.kind === "value" ? " Bars: estimated value of each option (higher is better)." : t.agent.kind === "queue" ? " Bars: vehicles queued for each option, as sent to the controller." : " Bars: probability of each option."}</p>
+              {(() => { const lo = t.agent!.kind === "queue" ? 0 : Math.min(...t.agent!.values), hi = Math.max(...t.agent!.values), span = hi - lo || 1;
                 return t.agent!.values.map((v, i) => (
                   <div key={i} className={`dec-row ${i === t.agent!.chosen ? "chosen" : ""}`}>
                     <span className="dec-name">Option {i + 1}</span>
                     <span className="state">{[...t.agent!.phases[i]].map((ch, k) => <i key={k} className={ch === "G" || ch === "g" ? "g" : "r"} />)}</span>
-                    <span className="dec-bar"><i style={{ width: `${t.agent!.kind === "value" ? 8 + 92 * (v - lo) / span : 100 * v}%` }} /></span>
-                    <span className="dec-val">{t.agent!.kind === "value" ? v.toFixed(2) : `${Math.round(v * 100)}%`}</span>
+                    <span className="dec-bar"><i style={{ width: `${t.agent!.kind === "value" ? 8 + 92 * (v - lo) / span : t.agent!.kind === "queue" ? 100 * v / span : 100 * v}%` }} /></span>
+                    <span className="dec-val">{t.agent!.kind === "value" ? v.toFixed(2) : t.agent!.kind === "queue" ? `${v} veh` : `${Math.round(v * 100)}%`}</span>
                   </div>
                 )); })()}
             </div>
           )}
-          {controller !== "max_pressure" && controller !== "rl" && t.phases.length > 0 && (
+          {controller !== "max_pressure" && controller !== "rl" && controller !== "external" && t.phases.length > 0 && (
             <div className="cycle-bar" aria-label="Signal plan">
               {t.phases.map((p, i) => <i key={i} className={/[Gg]/.test(p.state) ? "green" : /[yYu]/.test(p.state) ? "amber" : "red"}
                 style={{ flexGrow: p.duration, outline: i === t.phase ? "2px solid var(--asphalt)" : undefined }} />)}
