@@ -2,6 +2,28 @@ import { DELAY_LEGEND, type MapMode, type Selection } from "./MapView";
 import { fmt } from "./Results";
 import type { Bundle, Comparison, Controller, EdgeProps, Run } from "./types";
 
+const FOCUSABLE = "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled])";
+
+/** Arrow-key navigation for a list. Put it on the list element: Up and Down move between rows
+ *  (keeping the same button within a row), Home and End jump to the first and last row. */
+export function listNav(e: React.KeyboardEvent<HTMLElement>) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+  const target = e.target as HTMLElement;
+  // Leave keys alone in text and number fields and dropdowns; checkboxes and radios still move.
+  if (target.tagName === "SELECT" || target.tagName === "TEXTAREA") return;
+  if (target instanceof HTMLInputElement && !["checkbox", "radio"].includes(target.type)) return;
+  const rows = [...e.currentTarget.children].filter((r) => r.querySelector(FOCUSABLE) || r.matches(FOCUSABLE)) as HTMLElement[];
+  const at = rows.findIndex((r) => r.contains(target));
+  if (at < 0) return;
+  const inRow = (r: HTMLElement) => (r.matches(FOCUSABLE) ? [r] : [...r.querySelectorAll<HTMLElement>(FOCUSABLE)]);
+  const col = Math.max(0, inRow(rows[at]).indexOf(target));
+  const next = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : at + (e.key === "ArrowDown" ? 1 : -1);
+  if (next < 0 || next >= rows.length) return;
+  e.preventDefault();
+  const items = inRow(rows[next]);
+  items[Math.min(col, items.length - 1)]?.focus();
+}
+
 export type Side = "base" | "prop";
 export type Labels = { before: string; after: string };
 export const DEFAULT_LABELS: Labels = { before: "Reference", after: "Scenario" };
@@ -134,6 +156,7 @@ export function Legend({ mode, delaySide = "prop", setDelaySide, labels = DEFAUL
         <span><i className="sw edited" />Changed</span>
         <span><i className="sw closed" />Closed</span>
         <span><i className="dot" />Signal</span>
+        <span title="Zoom in to see which way each side of a street runs"><b className="dir" aria-hidden="true">›</b>Direction (zoom in)</span>
       </div>
     );
   if (mode === "change")

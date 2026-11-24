@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import Results, { fmt } from "./Results";
-import { controllerName, when } from "./shared";
+import { controllerName, when, listNav } from "./shared";
 import type { Comparison, Network, Run, RunSummary, Simulation } from "./types";
 
 /** Pair each proposal run with the run of its parent scenario that used the same seeds and started closest
@@ -70,7 +70,7 @@ export default function Experiments({ sims, networks, onOpen, onChanged, onOpenF
         {tab === "sims" && (
           <>
             {shown.length === 0 && <p className="small muted">No simulations yet. Run one in Traffic Simulation.</p>}
-            <ul className="exp-list">
+            <ul className="exp-list" onKeyDown={listNav}>
               {shown.map((s) => (
                 <li key={s.id} className="exp">
                   <div className="exp-top">

@@ -3,7 +3,7 @@ import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
 import EditPanel from "../EditPanel";
 import FindList from "../FindList";
-import { CONTROLLERS, Legend, when } from "../shared";
+import { CONTROLLERS, Legend, when, listNav } from "../shared";
 import { explainWarning, relatedEdits } from "../warnings";
 import { itemsFor, signalLabel } from "./NetworkExplorer";
 import type { Controller, Edit, EdgeProps, Geometry, Network, Scenario, SignalProgram, SignalProps } from "../types";
@@ -73,7 +73,7 @@ export default function ScenarioBuilder({ networks, scenarios, selected, onSelec
         {Object.entries(groups).map(([nid, list]) => (
           <div key={nid} className="scen-group">
             <h3>{netName(nid)}</h3>
-            <ul className="scen-list">
+            <ul className="scen-list" onKeyDown={listNav}>
               {list.map((s) => (
                 <li key={s.id}>
                   <button className="scen-item" onClick={() => onSelect(s.id)}>

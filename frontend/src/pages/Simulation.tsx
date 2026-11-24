@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { JobRow } from "../RunMonitor";
-import { CONTROLLERS, when } from "../shared";
+import { CONTROLLERS, when, listNav } from "../shared";
 import type { Health, Network, Scenario, Simulation as Sim } from "../types";
 
 const REPEATS = [5, 10, 20];
@@ -88,7 +88,7 @@ export default function SimulationPage({ networks, scenarios, sims, health, pres
               <fieldset className="field block">
                 <legend className="label">Scenarios to test</legend>
                 {choices.length === 0 && <p className="small muted">No other scenarios on this network yet. Build one in Scenario Builder.</p>}
-                <ul className="check-list">
+                <ul className="check-list" onKeyDown={listNav}>
                   {choices.map((s) => (
                     <li key={s.id}>
                       <label className="check">
@@ -156,7 +156,7 @@ export default function SimulationPage({ networks, scenarios, sims, health, pres
         {recent.length > 0 && (
           <>
             <h2 className="h2-inline">Recently finished</h2>
-            <ul className="recent card">
+            <ul className="recent card" onKeyDown={listNav}>
               {recent.map((s) => (
                 <li key={s.id}>
                   <span><b>{s.name}</b> <span className="small muted">{netName(s.network)}, {when(s.created)}</span></span>
