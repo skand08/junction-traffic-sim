@@ -43,6 +43,7 @@ class ControllerSpec(BaseModel):
     kind: Literal["fixed", "actuated", "max_pressure", "rl", "external"]
     agent_id: Optional[str] = None
     external: Optional[ExternalCfg] = None   # with kind "external": your controller's address and settings
+    pressure: Optional[dict] = None          # with kind "max_pressure": min_green_s, decision_s, max_wait_s, reach_m (tuned settings)
     checkpoint: str = "final"             # final | best | ep_NNNN.npz
     label: Optional[str] = None
 
@@ -62,7 +63,8 @@ class BenchCfg(BaseModel):
 def _label(c: ControllerSpec, names: dict) -> str:
     if c.label:
         return c.label
-    base = {"fixed": "Fixed timing", "actuated": "Vehicle-actuated", "max_pressure": "Pressure-based"}.get(c.kind)
+    base = {"fixed": "Fixed timing", "actuated": "Vehicle-actuated",
+            "max_pressure": "Pressure-based (tuned)" if c.pressure else "Pressure-based"}.get(c.kind)
     if base:
         return base
     if c.kind == "external":
@@ -186,6 +188,8 @@ class BenchmarkManager:
                                     controller=c.kind, depart_jitter_s=cfg.depart_jitter_s, research=True)
                         if c.kind == "external":
                             base["external"] = c.external.model_dump()
+                        if c.kind == "max_pressure" and c.pressure:
+                            base["pressure"] = c.pressure
                         if c.kind == "rl":
                             base["rl_model"] = str(self.model_path(c.agent_id, c.checkpoint))
                         for k in seeds:
