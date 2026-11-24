@@ -314,7 +314,7 @@ fieldset.field legend { margin-bottom: 6px; padding: 0; }
 .facts dt { color: var(--asphalt-2); }
 .facts dd { margin: 0; }
 .facts-box { margin-top: 16px; }
-.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 pre { font-size: 11px; white-space: pre-wrap; background: var(--paper); padding: 8px; border-radius: var(--radius-s); max-height: 220px; overflow: auto; }
 
 .monitor { margin-top: 18px; }

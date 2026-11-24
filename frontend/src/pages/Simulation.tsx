@@ -15,10 +15,11 @@ type Props = {
   onStarted: () => void;
   onChanged: () => Promise<void> | void;
   onResults: (simId: string) => void;
+  onEditScenario?: (scenarioId: string) => void;
   fail: (e: unknown) => void;
 };
 
-export default function SimulationPage({ networks, scenarios, sims, health, preset, onStarted, onChanged, onResults, fail }: Props) {
+export default function SimulationPage({ networks, scenarios, sims, health, preset, onStarted, onChanged, onResults, onEditScenario, fail }: Props) {
   const [nid, setNid] = useState<string>(preset?.network ?? "");
   const [ref, setRef] = useState<string>("");
   const [alts, setAlts] = useState<string[]>(preset?.scenario ? [preset.scenario] : []);
@@ -46,7 +47,9 @@ export default function SimulationPage({ networks, scenarios, sims, health, pres
   const choices = onNet.filter((s) => s.id !== ref);
   const seeds = Array.from({ length: repeats }, (_, i) => firstSeed + i);
   const running = sims.filter((s) => s.state === "running");
-  const recent = sims.filter((s) => s.state !== "running").slice(0, 6);
+  const failed = sims.filter((s) => s.state === "failed").slice(0, 3);
+  const recent = sims.filter((s) => s.state !== "running" && !failed.includes(s)).slice(0, 6);
+  const act = (f: () => Promise<unknown>) => async () => { try { await f(); onStarted(); } catch (e) { fail(e); } };
   const netName = (id: string) => networks.find((n) => n.id === id)?.name ?? id;
 
   async function start() {
@@ -152,6 +155,25 @@ export default function SimulationPage({ networks, scenarios, sims, health, pres
             <button className="btn secondary small" onClick={async () => { try { await api.cancelSimulation(s.id); onStarted(); } catch (e) { fail(e); } }}>Cancel</button>
           </div>
         ))}
+
+        {failed.length > 0 && (
+          <>
+            <h2 className="h2-inline">Needs attention</h2>
+            {failed.map((s) => (
+              <div key={s.id} className="card">
+                <div className="row spread"><h3 className="h3-flat">{s.name}</h3><span className="small muted">{netName(s.network)}, started {when(s.created)}</span></div>
+                {[{ ...s.reference, label: `${s.reference.scenario_name} (reference)` }, ...s.alternatives.map((a) => ({ ...a, label: a.scenario_name }))]
+                  .filter((p) => p.job.state === "failed")
+                  .map((p) => (
+                    <JobRow key={p.run_id} label={p.label} job={p.job} startedAt={null}
+                      onRetry={act(() => api.rerunSimulation(s.id))}
+                      onShowChange={onEditScenario ? () => onEditScenario(p.scenario_id) : undefined} />
+                  ))}
+                <button className="btn quiet small" onClick={act(() => api.deleteSimulation(s.id))}>Remove from list</button>
+              </div>
+            ))}
+          </>
+        )}
 
         {recent.length > 0 && (
           <>

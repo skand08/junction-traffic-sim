@@ -179,7 +179,8 @@ export default function App() {
           )}
           {section === "simulation" && (
             <SimulationPage networks={networks} scenarios={scenarios} sims={sims} health={health} preset={simPreset} fail={fail}
-              onChanged={loadScenarios} onStarted={loadSims} onResults={(id) => { setSimSel(id); go("results"); }} />
+              onChanged={loadScenarios} onStarted={loadSims} onResults={(id) => { setSimSel(id); go("results"); }}
+              onEditScenario={(id) => { setScenSel(id); go("scenario"); }} />
           )}
           {section === "results" && (
             <ResultsPage sims={sims} networks={networks} selected={simSel} onSelect={setSimSel} fail={fail}

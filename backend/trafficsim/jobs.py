@@ -33,6 +33,20 @@ def versions() -> dict:
     return dict(app=APP_VERSION, sumo=sumo_v, python=sys.version.split()[0])
 
 
+class SeedFailed(Exception):
+    """A worker process for one seed exited with an error. The message is the error itself (the last
+    line of the worker's traceback, e.g. SUMO's own message), not a cut-off slice of the traceback."""
+
+    def __init__(self, seed, output: str):
+        self.seed, self.output = seed, output
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        last = lines[-1] if lines else "the worker stopped without a message"
+        for prefix in ("RuntimeError: ", "Exception: "):
+            if last.startswith(prefix):
+                last = last[len(prefix):]
+        super().__init__(f"Run with seed {seed} failed: {last[:400]}")
+
+
 class Cancelled(Exception):
     pass
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -142,6 +156,13 @@ class JobManager:
         except build.EditError as e:
             record.update(state="failed", error=str(e), stage=stage)
             final = dict(state="failed", error=str(e), message="Cannot run these changes", stage=stage)
+        except SeedFailed as e:
+            if stop.is_set():
+                record.update(state="cancelled", stage=stage, seed_results=[])
+                final = dict(state="cancelled", message="Cancelled", stage=stage)
+            else:
+                record.update(state="failed", error=str(e), trace=e.output, stage=stage)
+                final = dict(state="failed", error=str(e), message="Failed", stage=stage, trace=_tail(e.output))
         except Exception as e:  # noqa: BLE001
             if stop.is_set():
                 record.update(state="cancelled", stage=stage, seed_results=[])
@@ -205,7 +226,7 @@ def run_seed_subprocess(job: dict, stop: "threading.Event | None" = None, regist
     if stop is not None and stop.is_set():
         raise Cancelled()
     if p.returncode != 0 or not os.path.exists(res_f):
-        raise RuntimeError(f"seed {job['seed']} failed: " + (se or so).strip()[-600:])
+        raise SeedFailed(job["seed"], (se or so or "").strip())
     with open(res_f) as f:
         return json.load(f)
 

@@ -84,7 +84,9 @@ def _common_args(job: dict, out: Path) -> list:
 def _run_native(job: dict, out: Path):
     r = subprocess.run([config.SUMO, *_common_args(job, out)], capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError("SUMO failed: " + r.stderr.strip()[-500:])
+        errs = [ln.strip() for ln in r.stderr.splitlines() if ln.strip().startswith("Error")]
+        msg = " ".join(errs) if errs else " ".join(r.stderr.strip().splitlines()[-2:])
+        raise RuntimeError("SUMO stopped with an error. " + (msg or f"Exit code {r.returncode}.")[-500:])
 
 
 def _is_green(state: str) -> bool:
