@@ -121,3 +121,35 @@ export type ResultSummary = {
   rerun_of?: string | null; reference_name: string; alternatives: ResultAlt[];
   versions?: Versions; started?: number; finished?: number;
 };
+
+/* ---------- live simulation ---------- */
+export type LiveRoute = { from_edge: string; to_edge: string; per_hour: number };
+export type LiveSetup = {
+  scenario_id: string; controller?: Controller | null;
+  intensity: "low" | "medium" | "high"; profile: "normal" | "morning" | "evening";
+  mix: "data" | "cars" | "mixed" | "two_wheelers"; duration_min: number; routes: LiveRoute[]; seed?: number;
+};
+export type LiveInfo = {
+  id: string; config: LiveSetup; scenario_name: string; network: string; controller: Controller;
+  begin: number; window_end: number; stop: number; warnings: string[];
+  state: "starting" | "running" | "paused" | "finished" | "failed"; error: string | null; t: number | null; run: number;
+};
+/** [id, lon, lat, angle, km/h, type (0 car, 1 two-wheeler, 2 bus, 3 truck), waiting s] */
+export type LiveVehicle = [string, number, number, number, number, number, number];
+export type LiveKpi = {
+  running: number; mean_speed_kmh: number; mean_wait_s: number; halting_pct: number; throughput_per_h: number;
+  arrived: number; departed: number; teleports: number; waiting_to_enter: number;
+};
+export type LiveLane = { index: number; vehicles: number; halting: number; speed_kmh: number; limit_kmh: number; occupancy_pct: number; width_m: number; allowed: string[] };
+export type LiveWatch =
+  | { edge: string; lanes: LiveLane[]; travel_time_s: number }
+  | { tls: string; state: string; phase: number; next_switch_s: number | null; phases: { duration: number; state: string }[];
+      approaches: { lane: string; edge: string; states: string; halting: number; vehicles: number }[] }
+  | { error: string };
+export type LiveFrame = {
+  kind: "frame"; seq: number; run: number; t: number; state: LiveInfo["state"]; speed: number;
+  veh: LiveVehicle[]; edges: Record<string, [number, number, number, number]>;
+  tls: Record<string, [string, number, number | null]>; kpi: LiveKpi;
+  hist: [number, number, number, number, number][]; watch: LiveWatch | null;
+};
+export type LiveStatic = { lanes: [string, string, number, boolean, [number, number][]][]; signal_marks: [string, number, number, number][]; geo: boolean };

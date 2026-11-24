@@ -2,6 +2,7 @@
 
 Run: uvicorn trafficsim.api:app --reload   (from the backend/ directory)
 """
+import atexit
 import os
 import shutil
 import json
@@ -9,7 +10,7 @@ import tempfile
 import uuid
 import threading
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, build, catalog, config, geometry, importer, jobs, names, runner, simulations, scenario as sc
+from . import analysis, build, catalog, config, geometry, importer, jobs, live, names, runner, simulations, scenario as sc
 from .scenario import Edit, Scenario
 
 app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
@@ -567,6 +568,123 @@ def import_bundle(bundle: dict):
         _nf(e)
     _check(s)
     return sc.save(s)
+
+
+# ---------- live simulation ----------
+LIVE = live.LiveManager()
+LIVE_DIR = config.WORKSPACE_DIR / "live"
+LIVE_DRAIN_S = 900          # simulated time after the demand window for trips to finish
+
+
+atexit.register(LIVE.stop_all)        # stop SUMO processes with the server
+
+
+def _live_info(s: "live.Session") -> dict:
+    f = s.frame or {}
+    meta = {k: v for k, v in s.meta.items() if k not in ("net_file", "net_mtime")}
+    return dict(id=s.id, config=s.cfg.model_dump(), **meta, state=("failed" if s.error else f.get("state", "starting")),
+                error=s.error, t=f.get("t"), run=s.run)
+
+
+@app.post("/api/live")
+def live_start(cfg: live.LiveConfig):
+    s = _get(cfg.scenario_id)
+    if cfg.controller:
+        s = s.model_copy(update=dict(controller=cfg.controller))
+    sid_dir = LIVE_DIR / uuid.uuid4().hex[:10]
+    sid_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        b = build.build(s, sid_dir)
+    except build.EditError as e:
+        raise HTTPException(422, str(e))
+    import sumolib
+    net = sumolib.net.readNet(str(b.net_file))
+    for r in cfg.routes:
+        for e in (r.from_edge, r.to_edge):
+            if not net.hasEdge(e) or not net.getEdge(e).allows("passenger"):
+                raise HTTPException(422, f"Road {e} is not open to cars in this scenario.")
+        path, _ = net.getShortestPath(net.getEdge(r.from_edge), net.getEdge(r.to_edge), vClass="passenger")
+        if path is None:
+            raise HTTPException(422, "There is no route for cars between the chosen entry and destination.")
+    window_end = b.begin + cfg.duration_min * 60
+    routes = live.live_demand(b.demand_file, sid_dir, cfg, b.begin, b.end, net)
+    job = dict(net_file=str(b.net_file), routes=str(routes), tls_additional=str(b.tls_additional) if b.tls_additional else None,
+               begin=b.begin, window_end=window_end, stop=window_end + LIVE_DRAIN_S,
+               scale=round(live.INTENSITY[cfg.intensity] * s.demand_scale, 3), seed=cfg.seed,
+               controller=s.controller, speed=1.0)
+    meta = dict(scenario_name=s.name, network=s.base_network, controller=s.controller, begin=b.begin,
+                window_end=window_end, stop=window_end + LIVE_DRAIN_S, warnings=b.warnings,
+                net_mtime=b.net_file.stat().st_mtime, net_file=str(b.net_file))
+    sess = LIVE.create(cfg, job, meta)
+    return _live_info(sess)
+
+
+def _live(sid: str) -> "live.Session":
+    try:
+        return LIVE.get(sid)
+    except KeyError as e:
+        _nf(e)
+
+
+@app.get("/api/live/{sid}")
+def live_status(sid: str):
+    return _live_info(_live(sid))
+
+
+@app.get("/api/live/{sid}/static")
+def live_static(sid: str):
+    s = _live(sid)
+    return geometry.live_static(s.meta["net_file"], s.meta["net_mtime"])
+
+
+@app.get("/api/live/{sid}/geometry")
+def live_geometry(sid: str):
+    s = _live(sid)
+    g = geometry.network_geojson(s.meta["net_file"], s.meta["net_mtime"])
+    g = dict(g, features=[dict(f, properties=dict(f["properties"])) for f in g["features"]])
+    names.label_edges(g["features"], s.meta["network"])
+    sc_ = sc.load(s.cfg.scenario_id)
+    edited = {}
+    for e in sc_.edits:
+        for key in ("edge", "from_edge", "node"):
+            if hasattr(e, key):
+                edited.setdefault(getattr(e, key), []).append(e.type)
+    return dict(g, edited=edited)
+
+
+@app.get("/api/live/{sid}/frame")
+def live_frame(sid: str, after: int = 0):
+    s = _live(sid)
+    f = s.wait_frame(after)
+    if s.error:
+        raise HTTPException(500, s.error)
+    if f is None:
+        return dict(kind="frame", seq=0, state="starting", run=s.run)
+    return dict(f, run=s.run)
+
+
+class LiveControl(BaseModel):
+    action: Literal["pause", "resume", "speed", "reset", "watch"]
+    speed: Optional[float] = Field(None, ge=0, le=1000)
+    watch: Optional[dict] = None
+
+
+@app.post("/api/live/{sid}/control")
+def live_control(sid: str, c: LiveControl):
+    s = _live(sid)
+    if c.action == "reset":
+        s.reset()                 # same settings and seed: the run replays identically
+        return _live_info(s)
+    if c.action == "speed" and c.speed is None:
+        raise HTTPException(422, "Give a speed.")
+    s.send(c.model_dump(exclude_none=True))
+    return _live_info(s)
+
+
+@app.delete("/api/live/{sid}")
+def live_stop(sid: str):
+    LIVE.remove(sid)
+    return dict(ok=True)
 
 
 # ---------- static frontend (production build) ----------
