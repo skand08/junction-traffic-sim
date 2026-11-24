@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ROAD_TYPES, type Edit, type EdgeProps, type Feature, type Geometry, type JunctionProps, type RoadType, type Scenario, type SignalProgram, type SignalProps } from "./types";
 import { edgeLabel, type Selection } from "./MapView";
+import FlyoverEditor from "./FlyoverEditor";
 
 type Props = {
   selection: Selection;
@@ -28,13 +29,26 @@ export default function EditPanel(props: Props) {
       </p>
     );
   }
-  if (selection.kind === "edge") return <RoadEditor {...props} id={selection.id} />;
+  if (selection.kind === "edge") {
+    const p = edgeById(props.geometry, selection.id);
+    const fly = props.scenario.edits.find((e) => e.type === "add_flyover" &&
+      (p?.flyover === e.node || [`${e.from_edge}_atgrade`, `${e.to_edge}_atgrade`].includes(selection.id))) as Extract<Edit, { type: "add_flyover" }> | undefined;
+    if (fly) return (
+      <div className="editor">
+        <h3>{p ? edgeLabel(p) : selection.id}</h3>
+        <p className="meta">{p?.flyover ? `Flyover deck: ${p.lanes} lane${p.lanes === 1 ? "" : "s"}, ${Math.round(p.speed_kmh)} km/h, ${Math.round(p.length_m)} m.`
+          : "Street-level piece between the flyover ramp and the junction, used by turning traffic."}</p>
+        <p className="small muted">This is part of the flyover at {props.signalTitle ? props.signalTitle(fly.node) : `junction ${fly.node}`}. Change or remove it from that junction.</p>
+      </div>
+    );
+    return <RoadEditor {...props} id={selection.id} />;
+  }
   if (selection.kind === "junction") return <JunctionEditor {...props} id={selection.id} />;
   return <SignalEditor {...props} id={selection.id} />;
 }
 
 /** A junction without a signal: add one (or undo a removal made in this scenario). */
-function JunctionEditor({ id, geometry, scenario, onEdits, busy, signalTitle }: Props & { id: string }) {
+function JunctionEditor({ id, geometry, baseGeometry, scenario, onEdits, busy, signalTitle }: Props & { id: string }) {
   const j = geometry?.features.find((f) => f.properties.kind === "junction" && f.properties.id === id)?.properties as JunctionProps | undefined;
   const removedHere = scenario.edits.some((e) => e.type === "remove_signal" && e.node === id);
   const rest = scenario.edits.filter((e) => !((e.type === "add_signal" || e.type === "remove_signal") && e.node === id));
@@ -57,6 +71,7 @@ function JunctionEditor({ id, geometry, scenario, onEdits, busy, signalTitle }: 
           <p className="small muted">SUMO gives it a standard fixed plan. You can retime it afterwards.</p>
         </>
       )}
+      <FlyoverEditor node={id} scenario={scenario} baseGeometry={baseGeometry} onEdits={onEdits} busy={busy} />
     </div>
   );
 }
@@ -216,7 +231,7 @@ function phaseKind(state: string) {
   return "red";
 }
 
-function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTitle }: Props & { id: string }) {
+function SignalEditor({ id, geometry, baseGeometry, scenario, signals, onEdits, busy, signalTitle }: Props & { id: string }) {
   const node = geometry?.features.find((f: Feature) => f.properties.kind === "signal" && f.properties.id === id)?.properties as SignalProps | undefined;
   const tid = node?.tls.find((t) => signals?.[t]) ?? node?.tls[0] ?? id;
   const prog = signals?.[tid];
@@ -315,6 +330,7 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
         )}
       </div>
       {addedHere && <p className="note">This signal is new in this scenario.</p>}
+      <FlyoverEditor node={id} scenario={scenario} baseGeometry={baseGeometry} onEdits={onEdits} busy={busy} />
       {removeButton}
     </div>
   );

@@ -810,3 +810,11 @@ button.stat:hover { border-color: var(--asphalt-2); }
 .net-pick.inline .net-pick-grid { width: 100%; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .bench-table th { white-space: normal; min-width: 92px; vertical-align: bottom; }
 .th-unit { display: block; font-weight: 400; color: var(--asphalt-2); font-size: 11px; }
+.flyover-ed { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
+.flyover-ed h4 { margin: 0 0 6px; font-size: var(--t-b); }
+.fly-axes { grid-template-columns: 1fr 1fr; margin: 8px 0; }
+.fly-form { display: grid; gap: 2px; margin-top: 6px; }
+.fly-form .primary { justify-self: start; margin-top: 6px; }
+.fly-form select, .fly-form input[type="number"] { width: 110px; }
+.fly-existing { background: var(--ok-bg); border-radius: var(--radius-s); padding: 8px 10px; margin: 6px 0; }
+.fly-existing p { margin: 0 0 4px; }

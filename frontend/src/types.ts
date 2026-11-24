@@ -13,7 +13,9 @@ export type Edit =
   | { type: "add_signal"; node: string }
   | { type: "remove_signal"; node: string }
   | { type: "set_lane_width"; edge: string; width_m: number }
-  | { type: "set_road_type"; edge: string; road_type: RoadType };
+  | { type: "set_road_type"; edge: string; road_type: RoadType }
+  | { type: "add_flyover"; node: string; from_edge: string; to_edge: string; lanes: number; speed_kmh: number; ramp_m: number; both_ways: boolean };
+export type FlyoverOption = { from_edge: string; to_edge: string; heading: string; reverse: { from_edge: string; to_edge: string } | null; lanes: number; max_ramp_m: number };
 
 export type RoadType = "local" | "collector" | "arterial" | "major_arterial" | "expressway";
 /** Same presets as the backend (scenario.ROAD_TYPES): speed limit + right of way at unsignalled junctions. */
@@ -36,7 +38,7 @@ export type Scenario = {
 export type EdgeProps = {
   kind: "edge"; id: string; name: string; lanes: number; speed_kmh: number; length_m: number;
   road_type: string; from_node: string; to_node: string; car_allowed: boolean;
-  priority?: number; lane_width_m?: number;
+  priority?: number; lane_width_m?: number; flyover?: string;
   label?: string; heading?: string;
 };
 export type SignalProps = { kind: "signal"; id: string; tls: string[]; incoming: string[]; outgoing: string[] };
