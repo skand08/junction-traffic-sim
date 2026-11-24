@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -22,7 +23,11 @@ from pathlib import Path
 
 from . import catalog, config
 
-OVERPASS_URL = os.environ.get("TRAFFICSIM_OVERPASS", "https://overpass-api.de/api/interpreter")
+# Public Overpass servers, tried in order; set TRAFFICSIM_OVERPASS to use your own (comma-separated).
+OVERPASS_URLS = [u.strip() for u in os.environ.get(
+    "TRAFFICSIM_OVERPASS",
+    "https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter").split(",") if u.strip()]
+BUSY = {429, 502, 503, 504}   # Overpass answers these when it is at capacity
 MAX_AREA_KM2 = float(os.environ.get("TRAFFICSIM_MAX_IMPORT_KM2", "6"))
 OSM_LICENSE = "© OpenStreetMap contributors (ODbL). Traffic generated randomly by SUMO randomTrips."
 DEFAULT_TRIPS_PER_KM = 150     # trips per hour per km of road; a moderate default the user can change
@@ -57,6 +62,10 @@ def area_km2(bbox) -> float:
     return abs(e - w) * 111.32 * math.cos(lat) * abs(n - s) * 110.57
 
 
+def _done(dest: Path) -> bool:
+    return dest.stat().st_size >= 200 and b"<osm" in dest.read_bytes()[:2000]
+
+
 def fetch_osm_bbox(bbox, dest: Path) -> Path:
     """Download the roads in bbox = [west, south, east, north] from the Overpass API."""
     w, s, e, n = [float(x) for x in bbox]
@@ -66,14 +75,35 @@ def fetch_osm_bbox(bbox, dest: Path) -> Path:
     if a > MAX_AREA_KM2:
         raise ImportError_(f"The area is {a:.1f} km²; the limit is {MAX_AREA_KM2:g} km². Zoom in and try again.")
     q = f'[out:xml][timeout:90];(way["highway"]({s},{w},{n},{e});>;);out body;'
-    req = urllib.request.Request(OVERPASS_URL, data=urllib.parse.urlencode({"data": q}).encode(),
-                                 headers={"User-Agent": "Junction traffic simulator"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-            shutil.copyfileobj(r, f)
-    except Exception as ex:  # noqa: BLE001
-        raise ImportError_(f"Could not download from OpenStreetMap (Overpass API): {ex}. "
-                           "Check the internet connection, or download an .osm file and upload it instead.")
+    body = urllib.parse.urlencode({"data": q}).encode()
+    busy, last = False, None
+    for url in OVERPASS_URLS:
+        for wait in (0, 3, 8):            # back off while the server says it is at capacity
+            time.sleep(wait)
+            req = urllib.request.Request(url, data=body, headers={"User-Agent": "Junction traffic simulator"})
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                if _done(dest):
+                    return _check_roads(dest)
+                last = "the server sent an unexpected reply"
+                break
+            except urllib.error.HTTPError as ex:
+                last = ex
+                if ex.code not in BUSY:
+                    break                  # a real error from this server: try the next one
+                busy = True
+            except Exception as ex:  # noqa: BLE001
+                last = ex
+                break
+    if busy:
+        raise ImportError_("OpenStreetMap's download service (Overpass API) is busy right now. "
+                           "Try again in a few minutes, or download an .osm file and upload it instead.")
+    raise ImportError_(f"Could not download from OpenStreetMap (Overpass API): {last}. "
+                       "Check the internet connection, or download an .osm file and upload it instead.")
+
+
+def _check_roads(dest: Path) -> Path:
     if dest.stat().st_size < 200 or b"<way" not in dest.read_bytes()[:5_000_000]:
         raise ImportError_("OpenStreetMap returned no roads for this area.")
     return dest
