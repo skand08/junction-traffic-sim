@@ -6,13 +6,16 @@ import { CONTROLLERS } from "../shared";
 import FindList from "../FindList";
 import { itemsFor, junctionLabel, signalLabel } from "./NetworkExplorer";
 import type {
-  Controller, EdgeProps, Feature, Geometry, JunctionProps, LiveFrame, LiveInfo, LiveRoute, LiveSetup, LiveStatic,
+  AgentInfo, Controller, EdgeProps, Feature, Geometry, JunctionProps, LiveFrame, LiveInfo, LiveRoute, LiveSetup, LiveStatic,
   LiveVehicle, Network, Scenario, SignalProps,
 } from "../types";
 
 type Props = {
   networks: Network[]; scenarios: Scenario[]; preset: { network: string; scenario?: string } | null;
   onChanged: () => Promise<void> | void; fail: (e: unknown) => void; tabs: React.ReactNode;
+  /** Research mode: start with this trained agent in control */
+  presetAgent?: string | null;
+  sessionKey?: string;
 };
 
 type ColorLayer = "congestion" | "delay" | "changed" | null;
@@ -37,6 +40,7 @@ const SIGNAL_COLOR: Record<string, RGBA> = {
   r: [200, 70, 58, 255], R: [200, 70, 58, 255], s: [200, 70, 58, 255], o: [150, 158, 154, 255], O: [150, 158, 154, 255],
 };
 const SESSION_KEY = "junction.live";
+export const ALG_NAME: Record<string, string> = { dqn: "DQN", double_dqn: "Double DQN", ppo: "PPO" };
 
 function clock(t: number) {
   const s = Math.max(0, Math.round(t)) % 86400;
@@ -69,11 +73,24 @@ function rect(v: LiveVehicle, lon: number, lat: number): [number, number][] {
   return pts.map(([f], i) => [lon + (f * fx + side[i] * fy) / mx, lat + (f * fy - side[i] * fx) / my] as [number, number]);
 }
 
-export default function LiveSim({ networks, scenarios, preset, onChanged, fail, tabs }: Props) {
+export default function LiveSim({ networks, scenarios, preset, onChanged, fail, tabs, presetAgent, sessionKey }: Props) {
+  const SESSION = sessionKey ?? SESSION_KEY;
   // ---------- setup ----------
   const [nid, setNid] = useState(preset?.network ?? "");
   const [sid, setSid] = useState(preset?.scenario ?? "");
-  const [controller, setController] = useState<Controller | "">("");
+  const [controller, setController] = useState<Controller | "rl" | "">(presetAgent ? "rl" : "");
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [rlAgent, setRlAgent] = useState<string>(presetAgent ?? "");
+  const [rlCkpt, setRlCkpt] = useState("final");
+  useEffect(() => { api.agents().then((a) => setAgents(a.filter((x) => x.has_model))).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!presetAgent) return;
+    setController("rl"); setRlAgent(presetAgent);
+    const a = agents.find((x) => x.id === presetAgent);
+    const s0 = a && scenarios.find((s) => s.id === a.config.scenario_id);
+    if (s0) { setNid(s0.base_network); setSid(s0.id); }
+  }, [presetAgent, agents.length]);
+  const agent = agents.find((a) => a.id === rlAgent);
   const [intensity, setIntensity] = useState<LiveSetup["intensity"]>("medium");
   const [profile, setProfile] = useState<LiveSetup["profile"]>("normal");
   const [mix, setMix] = useState<LiveSetup["mix"]>("data");
@@ -113,8 +130,8 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
 
   // reattach to a session left running (e.g. after visiting another section)
   useEffect(() => {
-    const id = sessionStorage.getItem(SESSION_KEY);
-    if (id) api.liveInfo(id).then((i) => { setInfo(i); setNid(i.network); setSid(i.config.scenario_id); }).catch(() => sessionStorage.removeItem(SESSION_KEY));
+    const id = sessionStorage.getItem(SESSION);
+    if (id) api.liveInfo(id).then((i) => { setInfo(i); setNid(i.network); setSid(i.config.scenario_id); }).catch(() => sessionStorage.removeItem(SESSION));
   }, []);
 
   // map geometry: the scenario's network (with its changes)
@@ -178,8 +195,10 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
     if (!sid) return;
     setBusy(true);
     try {
-      const i = await api.liveStart({ scenario_id: sid, controller: controller || null, intensity, profile, mix, duration_min: duration, routes });
-      sessionStorage.setItem(SESSION_KEY, i.id);
+      if (controller === "rl" && !rlAgent) throw new Error("Choose a trained agent.");
+      const i = await api.liveStart({ scenario_id: sid, controller: controller || null, rl_agent: controller === "rl" ? rlAgent : null,
+        rl_checkpoint: rlCkpt, intensity, profile, mix, duration_min: duration, routes });
+      sessionStorage.setItem(SESSION, i.id);
       setFrame(null); prev.current = { f: null, at: 0, dt: 250 };
       setInfo(i); setPick(null);
     } catch (e) { fail(e); } finally { setBusy(false); }
@@ -191,7 +210,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
   async function setSpeed(v: number) { if (info) try { await api.liveControl(info.id, { action: "speed", speed: v }); } catch (e) { fail(e); } }
   async function endSession() {
     if (info) await api.liveStop(info.id).catch(() => {});
-    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION);
     setInfo(null); setFrame(null); setStat(null); setSel(null);
   }
 
@@ -385,9 +404,27 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                   {CONTROLLERS.map((c) => (
                     <button key={c.id} role="radio" aria-checked={(controller || scenario?.controller) === c.id} onClick={() => setController(c.id)}>{c.name}</button>
                   ))}
-                  <button role="radio" aria-checked={false} disabled title="The RL controller is being trained in Sprint 4">RL-based</button>
+                  <button role="radio" aria-checked={controller === "rl"} disabled={!agents.length} onClick={() => setController("rl")}
+                    title={agents.length ? "A trained agent controls the signals" : "Train an agent in Research first"}>RL agent</button>
                 </div>
-                <span className="small muted">{controller && scenario && controller !== scenario.controller ? `Overrides the scenario's ${CONTROLLERS.find((c) => c.id === scenario.controller)?.name.toLowerCase()} for this run.` : "From the scenario."} RL-based control comes with Sprint 4.</span>
+                {controller === "rl" ? (
+                  <div className="rl-pick">
+                    <select value={rlAgent} onChange={(e) => { setRlAgent(e.target.value); setRlCkpt("final"); }} aria-label="Trained agent">
+                      <option value="">Choose a trained agent…</option>
+                      {agents.map((a) => <option key={a.id} value={a.id}>{a.config.name} ({ALG_NAME[a.config.algorithm]}, {a.status.episodes_done} episodes)</option>)}
+                    </select>
+                    {agent && (
+                      <select value={rlCkpt} onChange={(e) => setRlCkpt(e.target.value)} aria-label="Checkpoint">
+                        <option value="final">Final</option>
+                        {agent.has_best && <option value="best">Best episode ({agent.status.best_episode})</option>}
+                        {agent.checkpoints.map((c) => <option key={c} value={c}>Episode {Number(c.slice(3, 7))}</option>)}
+                      </select>
+                    )}
+                    {agent && agent.manifest.network !== nid && <span className="small warn-text">Trained on another network; only shared-parameter agents can run here.</span>}
+                  </div>
+                ) : (
+                  <span className="small muted">{controller && scenario && controller !== scenario.controller ? `Overrides the scenario's ${CONTROLLERS.find((c) => c.id === scenario.controller)?.name.toLowerCase()} for this run.` : "From the scenario."}{!agents.length && " RL agent: train one in Research first."}</span>
+                )}
               </div>
               <div className="field block"><span className="label">Traffic intensity</span>
                 <div className="seg wide" role="radiogroup" aria-label="Traffic intensity">
@@ -437,7 +474,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                 <span className={`status ${frame?.state ?? "starting"}`}>{{ starting: "Starting", running: "Running", paused: "Paused", finished: "Finished", failed: "Failed" }[frame?.state ?? "starting"]}</span>
               </div>
               <p className="small muted">
-                {networks.find((n) => n.id === info.network)?.name}. {CONTROLLERS.find((c) => c.id === info.controller)?.name}; {INTENSITY.find((x) => x[0] === info.config.intensity)?.[1].toLowerCase()} traffic, {PROFILE.find((x) => x[0] === info.config.profile)?.[1].toLowerCase()} profile, {info.config.duration_min} min{info.config.routes.length ? `, ${info.config.routes.length} extra route${info.config.routes.length > 1 ? "s" : ""}` : ""}.
+                {networks.find((n) => n.id === info.network)?.name}. {info.controller === "rl" ? `RL agent ${info.rl_agent ?? ""}` : CONTROLLERS.find((c) => c.id === info.controller)?.name}; {INTENSITY.find((x) => x[0] === info.config.intensity)?.[1].toLowerCase()} traffic, {PROFILE.find((x) => x[0] === info.config.profile)?.[1].toLowerCase()} profile, {info.config.duration_min} min{info.config.routes.length ? `, ${info.config.routes.length} extra route${info.config.routes.length > 1 ? "s" : ""}` : ""}.
               </p>
               {k && k.teleports > 0 && <p className="banner-inline warn">{k.teleports} vehicle{k.teleports > 1 ? "s were" : " was"} stuck for 5 minutes and removed from a jam by SUMO. Read congestion numbers with care.</p>}
               {info.warnings.length > 0 && <details className="small"><summary>{info.warnings.length} build note{info.warnings.length > 1 ? "s" : ""}</summary><ul>{info.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details>}
@@ -500,7 +537,7 @@ function Spark({ hist, begin, stop }: { hist: LiveFrame["hist"]; begin: number; 
 
 function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }: {
   sel: NonNullable<Selection>; frame: LiveFrame | null; geo: Geometry | null; edgeProps: Record<string, EdgeProps>;
-  roadName: (id: string) => string; controller: Controller; onClose: () => void;
+  roadName: (id: string) => string; controller: Controller | "rl"; onClose: () => void;
 }) {
   const w = frame?.watch;
   const head = (title: string) => <div className="row spread"><h3>{title}</h3><button className="btn quiet small" onClick={onClose}>Close</button></div>;
@@ -560,6 +597,8 @@ function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }
           <p className="small">
             {controller === "max_pressure"
               ? "Pressure-based control has no fixed plan: every 5 s it gives green to the movements with the longest queues relative to the space beyond."
+              : controller === "rl"
+              ? "The trained agent picks the next green every few seconds; amber and all-red are added for safety."
               : <>Phase {t.phase + 1} of {t.phases.length}{t.next_switch_s != null ? `, changes in ${t.next_switch_s} s` : ""}.{controller === "actuated" ? " Greens stretch or end early with demand." : ""}</>}
           </p>
           <table className="compact">
@@ -574,7 +613,22 @@ function Inspector({ sel, frame, geo, edgeProps, roadName, controller, onClose }
               ))}
             </tbody>
           </table>
-          {controller !== "max_pressure" && t.phases.length > 0 && (
+          {controller === "rl" && t.agent && (
+            <div className="agent-dec">
+              <p className="small"><b>Agent's last decision</b> at {clock(t.agent.t)}: {t.agent.held ? "keep" : "switch to"} phase option {t.agent.chosen + 1}.
+                {t.agent.kind === "value" ? " Bars: estimated value of each option (higher is better)." : " Bars: probability of each option."}</p>
+              {(() => { const lo = Math.min(...t.agent!.values), hi = Math.max(...t.agent!.values), span = hi - lo || 1;
+                return t.agent!.values.map((v, i) => (
+                  <div key={i} className={`dec-row ${i === t.agent!.chosen ? "chosen" : ""}`}>
+                    <span className="dec-name">Option {i + 1}</span>
+                    <span className="state">{[...t.agent!.phases[i]].map((ch, k) => <i key={k} className={ch === "G" || ch === "g" ? "g" : "r"} />)}</span>
+                    <span className="dec-bar"><i style={{ width: `${t.agent!.kind === "value" ? 8 + 92 * (v - lo) / span : 100 * v}%` }} /></span>
+                    <span className="dec-val">{t.agent!.kind === "value" ? v.toFixed(2) : `${Math.round(v * 100)}%`}</span>
+                  </div>
+                )); })()}
+            </div>
+          )}
+          {controller !== "max_pressure" && controller !== "rl" && t.phases.length > 0 && (
             <div className="cycle-bar" aria-label="Signal plan">
               {t.phases.map((p, i) => <i key={i} className={/[Gg]/.test(p.state) ? "green" : /[yYu]/.test(p.state) ? "amber" : "red"}
                 style={{ flexGrow: p.duration, outline: i === t.phase ? "2px solid var(--asphalt)" : undefined }} />)}

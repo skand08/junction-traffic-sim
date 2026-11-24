@@ -5,10 +5,11 @@ import ScenarioBuilder from "./pages/ScenarioBuilder";
 import SimulationPage from "./pages/Simulation";
 import ResultsPage from "./pages/ResultsPage";
 import Experiments from "./Experiments";
+import Research from "./pages/Research";
 import { when } from "./shared";
 import type { Health, Network, Scenario, Simulation } from "./types";
 
-type Section = "overview" | "network" | "scenario" | "simulation" | "results" | "experiments";
+type Section = "overview" | "network" | "scenario" | "simulation" | "results" | "experiments" | "research";
 const SECTIONS: { id: Section; name: string; short: string; icon: string }[] = [
   { id: "overview", name: "Overview", short: "Overview", icon: "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" },
   { id: "network", name: "Network Explorer", short: "Networks", icon: "M9 4l-6 2v14l6-2 6 2 6-2V4l-6 2-6-2zm0 0v14m6-12v14" },
@@ -16,6 +17,7 @@ const SECTIONS: { id: Section; name: string; short: string; icon: string }[] = [
   { id: "simulation", name: "Traffic Simulation", short: "Simulate", icon: "M7 4l12 8-12 8V4z" },
   { id: "results", name: "Results & Analytics", short: "Results", icon: "M4 20V10m6 10V4m6 16v-7m6 7H2" },
   { id: "experiments", name: "Experiments & History", short: "History", icon: "M12 7v5l3 2m6-2a9 9 0 1 1-3-6.7M21 4v5h-5" },
+  { id: "research", name: "Research", short: "Research", icon: "M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3M7 15h10" },
 ];
 
 function Icon({ d }: { d: string }) {
@@ -194,6 +196,9 @@ export default function App() {
             <Experiments sims={sims} networks={networks} fail={fail} onChanged={loadSims} onOpenFile={() => fileRef.current?.click()}
               selected={expSel} onSelect={setExpSel} onScenario={(id) => { setScenSel(id); go("scenario"); }}
               onOpen={(id) => { setSimSel(id); go("results"); }} />
+          )}
+          {section === "research" && (
+            <Research networks={networks} scenarios={scenarios} onChanged={loadScenarios} fail={fail} />
           )}
         </div>
       </div>

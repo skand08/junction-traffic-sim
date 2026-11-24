@@ -468,7 +468,7 @@ def test_live_session_streams_real_sumo_state():
     info = r.json()
     lid = info["id"]
     assert info["controller"] == "actuated" and info["window_end"] - info["begin"] == 600
-    c.post(f"/api/live/{lid}/control", json={"action": "speed", "speed": 0})
+    c.post(f"/api/live/{lid}/control", json={"action": "speed", "speed": 20})
     f = _live_frames(lid, lambda f: f["kpi"]["running"] > 20)
     k = f["kpi"]
     v = f["veh"][0]
@@ -485,7 +485,9 @@ def test_live_session_streams_real_sumo_state():
     c.post(f"/api/live/{lid}/control", json={"action": "watch", "watch": {"tls": "B1"}})
     w = _live_frames(lid, lambda f: bool(f.get("watch")) and f["watch"].get("tls") == "B1")["watch"]
     assert w["state"] and w["approaches"] and w["phases"]
-    # pause holds the clock; resume and reset work
+    # pause holds the clock; resume and reset work (back to real time first, so the run can't finish before the pause lands)
+    c.post(f"/api/live/{lid}/control", json={"action": "speed", "speed": 1})
+    assert _live_frames(lid, lambda f: f["speed"] == 1)["state"] == "running"
     c.post(f"/api/live/{lid}/control", json={"action": "pause"})
     t1 = _live_frames(lid, lambda f: f["state"] == "paused")["t"]
     time.sleep(1)

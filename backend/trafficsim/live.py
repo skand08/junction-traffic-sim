@@ -56,7 +56,9 @@ class LiveRoute(BaseModel):
 
 class LiveConfig(BaseModel):
     scenario_id: str
-    controller: Optional[Literal["fixed", "actuated", "max_pressure"]] = None   # None: the scenario's own
+    controller: Optional[Literal["fixed", "actuated", "max_pressure", "rl"]] = None   # None: the scenario's own
+    rl_agent: Optional[str] = None             # trained agent id, with controller "rl"
+    rl_checkpoint: str = "final"
     intensity: Literal["low", "medium", "high"] = "medium"
     profile: Literal["normal", "morning", "evening"] = "normal"
     mix: Literal["data", "cars", "mixed", "two_wheelers"] = "data"
@@ -158,6 +160,15 @@ def _worker(job: dict, conn):
         conn.send(dict(kind="error", error=f"SUMO could not start: {e}"))
         return
     pressure = PressureController(ls, job["net_file"]) if job["controller"] == "max_pressure" else None
+    rl = None
+    if job["controller"] == "rl":
+        from .rl.policy import RLController
+        try:
+            rl = RLController(ls, job["net_file"], job["rl_model"])
+        except Exception as e:  # noqa: BLE001
+            conn.send(dict(kind="error", error=str(e)))
+            ls.close()
+            return
     tls_ids = list(ls.trafficlight.getIDList())
     state, speed, watch = "running", float(job.get("speed", 1.0)), None
     seq, hist, arrivals = 0, [], []
@@ -213,7 +224,7 @@ def _worker(job: dict, conn):
                    throughput_per_h=round(recent * 3600 / span), arrived=arrived, departed=departed,
                    teleports=teleports, waiting_to_enter=len(ls.simulation.getPendingVehicles()))
         return dict(kind="frame", seq=seq, t=t, state=state, speed=speed, veh=veh, edges=edges, tls=tls,
-                    kpi=kpi, hist=hist, watch=_watch(ls, watch, t))
+                    kpi=kpi, hist=hist, watch=_watch(ls, watch, t, rl))
 
     try:
         conn.send(frame())
@@ -248,6 +259,8 @@ def _worker(job: dict, conn):
             ls.simulationStep()
             if pressure:
                 pressure.step()
+            if rl:
+                rl.step()
             t = ls.simulation.getTime()
             a_now = ls.simulation.getArrivedNumber()
             arrived += a_now
@@ -284,7 +297,7 @@ def _worker(job: dict, conn):
             pass
 
 
-def _watch(ls, watch: Optional[dict], t: float) -> Optional[dict]:
+def _watch(ls, watch: Optional[dict], t: float, rl=None) -> Optional[dict]:
     """Details for the selected road or signal, read from SUMO for this frame."""
     if not watch:
         return None
@@ -321,7 +334,8 @@ def _watch(ls, watch: Optional[dict], t: float) -> Optional[dict]:
             return dict(tls=tid, state=state, phase=ls.trafficlight.getPhase(tid),
                         next_switch_s=round(nxt) if nxt < 3600 else None,   # pressure control holds phases open-ended
                         phases=[dict(duration=p.duration, state=p.state) for p in cur.phases] if cur else [],
-                        approaches=list(approaches.values()))
+                        approaches=list(approaches.values()),
+                        agent=(rl.decisions.get(tid) if rl else None))
     except Exception as e:  # noqa: BLE001
         return dict(error=str(e))
     return None

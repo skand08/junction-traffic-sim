@@ -5,6 +5,7 @@ Run: uvicorn trafficsim.api:app --reload   (from the backend/ directory)
 import atexit
 import os
 import shutil
+import io
 import json
 import tempfile
 import uuid
@@ -589,7 +590,13 @@ def _live_info(s: "live.Session") -> dict:
 @app.post("/api/live")
 def live_start(cfg: live.LiveConfig):
     s = _get(cfg.scenario_id)
-    if cfg.controller:
+    rl_model = None
+    if cfg.controller == "rl":
+        if not cfg.rl_agent:
+            raise HTTPException(422, "Choose a trained agent.")
+        rl_model = str(_model_path(cfg.rl_agent, cfg.rl_checkpoint))
+        s = s.model_copy(update=dict(controller="fixed"))
+    elif cfg.controller:
         s = s.model_copy(update=dict(controller=cfg.controller))
     sid_dir = LIVE_DIR / uuid.uuid4().hex[:10]
     sid_dir.mkdir(parents=True, exist_ok=True)
@@ -611,8 +618,9 @@ def live_start(cfg: live.LiveConfig):
     job = dict(net_file=str(b.net_file), routes=str(routes), tls_additional=str(b.tls_additional) if b.tls_additional else None,
                begin=b.begin, window_end=window_end, stop=window_end + LIVE_DRAIN_S,
                scale=round(live.INTENSITY[cfg.intensity] * s.demand_scale, 3), seed=cfg.seed,
-               controller=s.controller, speed=1.0)
-    meta = dict(scenario_name=s.name, network=s.base_network, controller=s.controller, begin=b.begin,
+               controller="rl" if rl_model else s.controller, rl_model=rl_model, speed=1.0)
+    meta = dict(scenario_name=s.name, network=s.base_network, controller="rl" if rl_model else s.controller, begin=b.begin,
+                rl_agent=(_agent_info(cfg.rl_agent)["config"]["name"] if rl_model else None),
                 window_end=window_end, stop=window_end + LIVE_DRAIN_S, warnings=b.warnings,
                 net_mtime=b.net_file.stat().st_mtime, net_file=str(b.net_file))
     sess = LIVE.create(cfg, job, meta)
@@ -685,6 +693,194 @@ def live_control(sid: str, c: LiveControl):
 def live_stop(sid: str):
     LIVE.remove(sid)
     return dict(ok=True)
+
+
+# ---------- research mode ----------
+from .rl import train as rl_train            # noqa: E402
+from . import research                        # noqa: E402
+from fastapi.responses import Response         # noqa: E402
+
+TRAIN = rl_train.TrainingManager()
+atexit.register(TRAIN.stop_all)
+
+
+def _agent_info(aid):
+    try:
+        return TRAIN.info(aid)
+    except KeyError as e:
+        _nf(e)
+
+
+def _model_path(aid, which="final"):
+    try:
+        return TRAIN.model_path(aid, which)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+
+BENCH = research.BenchmarkManager(_model_path, _agent_info)
+
+
+@app.get("/api/research/defaults")
+def research_defaults():
+    return dict(agent=rl_train.AgentCfg(scenario_id="").model_dump(), measures=research.MEASURES)
+
+
+@app.post("/api/research/agents")
+def train_agent(cfg: rl_train.AgentCfg):
+    s = _get(cfg.scenario_id)
+
+    def prepare(cfg, d):
+        s2 = s.model_copy(update=dict(controller="fixed"))
+        try:
+            b = build.build(s2, d / "build")
+        except build.EditError as e:
+            raise HTTPException(422, str(e))
+        return dict(net_file=str(b.net_file), routes=str(b.demand_file), begin=b.begin, network=s.base_network,
+                    scenario_name=s.name, net_sha=rl_train._sha(str(b.net_file)))
+    try:
+        return TRAIN.create(cfg, prepare)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/research/agents")
+def list_agents():
+    return TRAIN.list()
+
+
+@app.get("/api/research/agents/{aid}")
+def get_agent(aid: str):
+    return _agent_info(aid)
+
+
+@app.get("/api/research/agents/{aid}/log")
+def agent_log(aid: str):
+    _agent_info(aid)
+    return TRAIN.log(aid)
+
+
+class TrainControl(BaseModel):
+    action: Literal["pause", "resume", "stop"]
+
+
+@app.post("/api/research/agents/{aid}/control")
+def agent_control(aid: str, c: TrainControl):
+    _agent_info(aid)
+    try:
+        TRAIN.control(aid, c.action)
+    except KeyError as e:
+        raise HTTPException(409, str(e))
+    return _agent_info(aid)
+
+
+@app.delete("/api/research/agents/{aid}")
+def delete_agent(aid: str):
+    _agent_info(aid)
+    try:
+        TRAIN.delete(aid)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return dict(ok=True)
+
+
+@app.get("/api/research/agents/{aid}/model")
+def agent_model(aid: str, which: str = "final"):
+    p = _model_path(aid, which)
+    name = _agent_info(aid)["config"]["name"].replace(" ", "_")
+    return FileResponse(p, filename=f"{name}_{aid}_{which.replace('.npz', '')}.npz")
+
+
+@app.get("/api/research/agents/{aid}/export")
+def agent_export(aid: str):
+    """A zip with everything to reuse or retrain the agent: config, manifest, log (JSONL and CSV), weights."""
+    import zipfile, csv as _csv
+    info = _agent_info(aid)
+    d = rl_train.AGENTS_DIR / aid
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in ("config.json", "manifest.json", "status.json", "log.jsonl", "final.npz", "best.npz"):
+            if (d / f).exists():
+                z.write(d / f, f)
+        for f in sorted((d / "ckpt").glob("*.npz")) if (d / "ckpt").exists() else []:
+            z.write(f, f"checkpoints/{f.name}")
+        rows = TRAIN.log(aid)
+        if rows:
+            sio = io.StringIO()
+            w = _csv.DictWriter(sio, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+            z.writestr("log.csv", sio.getvalue())
+    name = info["config"]["name"].replace(" ", "_")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}_{aid}.zip"'})
+
+
+@app.post("/api/research/benchmarks")
+def create_benchmark(cfg: research.BenchCfg):
+    for i in [cfg.scenario_id, *cfg.heldout_ids]:
+        _get(i)
+    try:
+        return BENCH.create(cfg)
+    except (ValueError, build.EditError) as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/research/benchmarks")
+def list_benchmarks():
+    return BENCH.list()
+
+
+def _bench(bid):
+    try:
+        return BENCH.info(bid)
+    except KeyError as e:
+        _nf(e)
+
+
+@app.get("/api/research/benchmarks/{bid}")
+def get_benchmark(bid: str):
+    return _bench(bid)
+
+
+@app.get("/api/research/benchmarks/{bid}/stats")
+def benchmark_stats(bid: str):
+    _bench(bid)
+    return BENCH.stats(bid)
+
+
+@app.post("/api/research/benchmarks/{bid}/cancel")
+def cancel_benchmark(bid: str):
+    _bench(bid)
+    BENCH.cancel(bid)
+    return _bench(bid)
+
+
+@app.delete("/api/research/benchmarks/{bid}")
+def delete_benchmark(bid: str):
+    info = _bench(bid)
+    if info["status"].get("state") in ("running", "queued"):
+        raise HTTPException(409, "Cancel the benchmark before deleting it.")
+    shutil.rmtree(research.BENCH_DIR / bid, ignore_errors=True)
+    return dict(ok=True)
+
+
+@app.get("/api/research/benchmarks/{bid}/export.csv")
+def benchmark_csv(bid: str):
+    _bench(bid)
+    return Response(BENCH.csv(bid), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="benchmark_{bid}.csv"'})
+
+
+@app.get("/api/research/benchmarks/{bid}/export.json")
+def benchmark_json(bid: str):
+    info = _bench(bid)
+    body = dict(benchmark=info, statistics=BENCH.stats(bid),
+                runs=[dict({k: v for k, v in c.items() if k != "seed_results"},
+                           seeds=[dict(seed=r["seed"], kpi=r["kpi"], wall_s=r.get("wall_s")) for r in c["seed_results"]])
+                      for c in BENCH.results(bid)])
+    return Response(json.dumps(body, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="benchmark_{bid}.json"'})
 
 
 # ---------- static frontend (production build) ----------
