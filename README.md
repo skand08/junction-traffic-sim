@@ -83,8 +83,23 @@ from the change, not from luck. A result is "consistent" when the proposal wins 
 | `TRAFFICSIM_RESCO_DIR` | `$TRAFFICSIM_DATA/resco/resco_benchmark/environments` | RESCO checkout |
 | `TRAFFICSIM_WORKERS` | CPU count − 1 | Parallel simulations |
 | `TRAFFICSIM_CORS` | `*` | Allowed origins for the API |
+| `JUNCTION_CONTROLLER_HOSTS` | `localhost,127.0.0.1,::1` | Hosts an external signal controller may run on |
 
 Run the tests with `cd backend && pytest -q`.
+
+## Integrations
+
+- **External signal controllers.** Run your own controller as a small web service and use it in the live view
+  or in Research benchmarks. Junction sends each free signal's queue, approaching vehicles and queue beyond for
+  every green option; the service answers with the green to show next. Junction applies minimum green, amber
+  and all-red. Protocol: `backend/trafficsim/external.py`; a working example (standard library only):
+  `python backend/examples/external_controller.py --port 9000`.
+- **RL environment export.** Research → Your own code → Download environment: a zip with the scenario's network,
+  demand and a `junction_env` package (PettingZoo parallel API) that reuses Junction's own observation, safety
+  rules and reward. Needs only SUMO and NumPy.
+- **Traffic counts.** Scenario Builder → Traffic counts: download the road list, fill in counted vehicles per
+  road for the demand hour, upload. SUMO's `routeSampler` refits the trips over counted roads; the fit is
+  checked in a simulation and reported per road with GEH. Comparisons require the same traffic on both sides.
 
 ## Known limitations (sprint 1 of the app)
 

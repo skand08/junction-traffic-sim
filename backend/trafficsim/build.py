@@ -259,6 +259,13 @@ def build(s: Scenario, out_dir: Path) -> Build:
     warnings = list(warnings)
     demand = base_dir / "demand.rou.xml"
     bad, total = (0, m.get("trips", 0))
+    if s.calibration:                                  # demand fitted to traffic counts (calibrate.py)
+        cal = config.WORKSPACE_DIR / "calibrations" / s.calibration / "demand.rou.xml"
+        if cal.exists():
+            demand = cal
+            total = sum(1 for _ in ET.iterparse(cal) if _[1].tag in ("vehicle", "trip"))
+        else:
+            warnings.append("The traffic-count calibration for this scenario is missing; the network's own demand was used.")
     if any(e.type in ("close_road", "ban_turn") for e in s.edits):
         bad, total = _check_routes(net_file, demand)
         if total and bad / total > 0.2:

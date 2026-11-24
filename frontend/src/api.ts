@@ -1,4 +1,4 @@
-import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, EpisodeRow } from "./types";
+import type { Calibration, ControllerTestResult, EnvExportCfg, Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, EpisodeRow } from "./types";
 
 const BASE = (import.meta as any).env?.VITE_API ?? "/api";
 
@@ -79,6 +79,28 @@ export const api = {
   runBenchmark: (cfg: BenchConfig) => req<BenchInfo>("/research/benchmarks", { method: "POST", body: JSON.stringify(cfg) }),
   cancelBenchmark: (id: string) => req<BenchInfo>(`/research/benchmarks/${id}/cancel`, { method: "POST" }),
   deleteBenchmark: (id: string) => req<{ ok: boolean }>(`/research/benchmarks/${id}`, { method: "DELETE" }),
+  testController: (url: string) => req<ControllerTestResult>("/controllers/test", { method: "POST", body: JSON.stringify({ url }) }),
+  controllerProtocol: () => req<{ protocol: string; allowed_hosts: string[]; description: string }>("/controllers/protocol"),
+  controllerExampleUrl: () => `${BASE}/controllers/example.py`,
+  /** Builds the environment zip and saves it in the browser. */
+  downloadRlEnv: async (sid: string, cfg: EnvExportCfg) => {
+    const r = await fetch(`${BASE}/scenarios/${sid}/rl-env`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) });
+    if (!r.ok) {
+      let msg = `Export failed (${r.status})`;
+      try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : msg; } catch { /* keep */ }
+      throw new ApiError(msg, r.status);
+    }
+    const name = /filename="([^"]+)"/.exec(r.headers.get("Content-Disposition") ?? "")?.[1] ?? "junction_env.zip";
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return name;
+  },
+  countsTemplateUrl: (sid: string) => `${BASE}/scenarios/${sid}/counts-template.csv`,
+  startCalibration: (sid: string, csv: string) => req<Calibration>(`/scenarios/${sid}/calibrations`, { method: "POST", body: JSON.stringify({ csv }) }),
+  calibrations: (sid: string) => req<Calibration[]>(`/scenarios/${sid}/calibrations`),
+  calibration: (cid: string) => req<Calibration>(`/calibrations/${cid}`),
+  useCalibration: (sid: string, calibration: string | null) => req<Scenario>(`/scenarios/${sid}/calibration`, { method: "PUT", body: JSON.stringify({ calibration }) }),
   benchCsvUrl: (id: string) => `${BASE}/research/benchmarks/${id}/export.csv`,
   benchJsonUrl: (id: string) => `${BASE}/research/benchmarks/${id}/export.json`,
   results: (network?: string) => req<ResultSummary[]>(`/results${network ? `?network=${network}` : ""}`),

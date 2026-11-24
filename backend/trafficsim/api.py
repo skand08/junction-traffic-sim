@@ -5,11 +5,13 @@ Run: uvicorn trafficsim.api:app --reload   (from the backend/ directory)
 import atexit
 import os
 import shutil
+import csv
 import io
 import json
 import tempfile
 import uuid
 import threading
+import re
 from pathlib import Path
 from typing import List, Literal, Optional, Union
 
@@ -19,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, build, catalog, config, geometry, importer, jobs, live, names, runner, simulations, scenario as sc
+from . import analysis, build, calibrate, catalog, config, envexport, geometry, external, importer, jobs, live, names, runner, simulations, scenario as sc
 from .scenario import Edit, Scenario
 
 app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
@@ -393,6 +395,9 @@ def create_simulation(body: SimulationRequest):
         raise HTTPException(422, "All scenarios in a simulation must use the same network.")
     if body.reference in body.alternatives:
         raise HTTPException(422, "The reference cannot also be an alternative.")
+    if any(a.calibration != ref.calibration for a in alts):
+        raise HTTPException(422, "These scenarios use different traffic demand (traffic-count calibration). Give them "
+                                 "the same calibration, or none, so the comparison shows only the effect of the changes.")
     seeds = list(range(1, body.seeds + 1)) if isinstance(body.seeds, int) else body.seeds
     if not 1 <= len(seeds) <= 50:
         raise HTTPException(422, "Use between 1 and 50 seeds.")
@@ -596,6 +601,14 @@ def live_start(cfg: live.LiveConfig):
             raise HTTPException(422, "Choose a trained agent.")
         rl_model = str(_model_path(cfg.rl_agent, cfg.rl_checkpoint))
         s = s.model_copy(update=dict(controller="fixed"))
+    elif cfg.controller == "external":
+        if not cfg.external:
+            raise HTTPException(422, "Give the external controller's address.")
+        try:
+            external.check_url(cfg.external.url)
+        except external.ControllerError as e:
+            raise HTTPException(422, str(e))
+        s = s.model_copy(update=dict(controller="fixed"))
     elif cfg.controller:
         s = s.model_copy(update=dict(controller=cfg.controller))
     sid_dir = LIVE_DIR / uuid.uuid4().hex[:10]
@@ -618,9 +631,12 @@ def live_start(cfg: live.LiveConfig):
     job = dict(net_file=str(b.net_file), routes=str(routes), tls_additional=str(b.tls_additional) if b.tls_additional else None,
                begin=b.begin, window_end=window_end, stop=window_end + LIVE_DRAIN_S,
                scale=round(live.INTENSITY[cfg.intensity] * s.demand_scale, 3), seed=cfg.seed,
-               controller="rl" if rl_model else s.controller, rl_model=rl_model, speed=1.0)
-    meta = dict(scenario_name=s.name, network=s.base_network, controller="rl" if rl_model else s.controller, begin=b.begin,
+               controller=cfg.controller if cfg.controller in ("rl", "external") else s.controller, rl_model=rl_model,
+               external=cfg.external.model_dump() if cfg.controller == "external" else None, speed=1.0)
+    meta = dict(scenario_name=s.name, network=s.base_network,
+                controller=cfg.controller if cfg.controller in ("rl", "external") else s.controller, begin=b.begin,
                 rl_agent=(_agent_info(cfg.rl_agent)["config"]["name"] if rl_model else None),
+                external=cfg.external.name if cfg.controller == "external" else None,
                 window_end=window_end, stop=window_end + LIVE_DRAIN_S, warnings=b.warnings,
                 net_mtime=b.net_file.stat().st_mtime, net_file=str(b.net_file))
     sess = LIVE.create(cfg, job, meta)
@@ -814,6 +830,123 @@ def agent_export(aid: str):
     name = info["config"]["name"].replace(" ", "_")
     return Response(buf.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{name}_{aid}.zip"'})
+
+
+CAL = calibrate.Manager()
+
+
+@app.get("/api/scenarios/{sid}/counts-template.csv")
+def counts_template(sid: str):
+    """Every road open to cars, with its readable name and an empty count column to fill in."""
+    s = _get(sid)
+    net = _built_net(s)
+    g = geometry.network_geojson(str(net), net.stat().st_mtime)
+    feats = [dict(f, properties=dict(f["properties"])) for f in g["features"] if f["properties"].get("kind") == "edge"]
+    names.label_edges(feats, s.base_network)
+    import sumolib
+    sn = sumolib.net.readNet(str(net))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["road", "name", "lanes", "vehicles"])
+    for f in sorted(feats, key=lambda f: f["properties"].get("label", "")):
+        p = f["properties"]
+        if sn.hasEdge(p["id"]) and sn.getEdge(p["id"]).allows("passenger"):
+            w.writerow([p["id"], p.get("label", ""), p.get("lanes", ""), ""])
+    fname = re.sub(r"[^A-Za-z0-9_-]+", "_", s.name).strip("_") or "scenario"
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="counts_{fname}.csv"'})
+
+
+class CalibrateBody(BaseModel):
+    csv: str = Field(max_length=2_000_000)
+    seed: int = Field(1, ge=1, le=1_000_000)
+
+
+@app.post("/api/scenarios/{sid}/calibrations")
+def start_calibration(sid: str, body: CalibrateBody):
+    s = _get(sid)
+    import sumolib
+    net = sumolib.net.readNet(str(_built_net(s.model_copy(update=dict(calibration=None)))))
+    try:
+        counts, problems = calibrate.parse_csv(body.csv, net)
+    except calibrate.CalibrationError as e:
+        raise HTTPException(422, str(e))
+    return CAL.start(s, counts, problems, body.seed)
+
+
+@app.get("/api/scenarios/{sid}/calibrations")
+def list_calibrations(sid: str):
+    _get(sid)
+    return CAL.list(sid)
+
+
+@app.get("/api/calibrations/{cid}")
+def get_calibration(cid: str):
+    try:
+        return CAL.info(cid)
+    except KeyError as e:
+        _nf(e)
+
+
+class UseCalibration(BaseModel):
+    calibration: Optional[str] = None      # None: back to the network's own demand
+
+
+@app.put("/api/scenarios/{sid}/calibration")
+def use_calibration(sid: str, body: UseCalibration):
+    s = _get(sid)
+    if body.calibration:
+        try:
+            info = CAL.info(body.calibration)
+        except KeyError as e:
+            _nf(e)
+        if info["network"] != s.base_network or info["status"].get("state") != "done":
+            raise HTTPException(422, "Use a finished calibration made on this network.")
+    return sc.save(s.model_copy(update=dict(calibration=body.calibration)))
+
+
+@app.post("/api/scenarios/{sid}/rl-env")
+def export_rl_env(sid: str, cfg: envexport.EnvCfg):
+    """The scenario as a self-contained multi-agent RL environment (zip), for training with your own code."""
+    s = _get(sid)
+    work = config.WORKSPACE_DIR / "exports" / uuid.uuid4().hex[:10]
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        data = envexport.export(s, cfg, work)
+    except (ValueError, build.EditError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    fname = re.sub(r"[^A-Za-z0-9_-]+", "_", s.name).strip("_") or "scenario"
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="junction_env_{fname}.zip"'})
+
+
+class ControllerTest(BaseModel):
+    url: str
+    timeout_s: float = Field(2.0, gt=0, le=30)
+
+
+@app.post("/api/controllers/test")
+def test_controller(t: ControllerTest):
+    """Send one example request to an external controller and check its answer."""
+    try:
+        return external.test(t.url, t.timeout_s)
+    except external.ControllerError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/controllers/example.py")
+def controller_example():
+    f = config.BACKEND_DIR / "examples" / "external_controller.py"
+    return Response(f.read_text(), media_type="text/x-python",
+                    headers={"Content-Disposition": 'attachment; filename="external_controller.py"'})
+
+
+@app.get("/api/controllers/protocol")
+def controller_protocol():
+    return dict(protocol=external.PROTOCOL, allowed_hosts=sorted(external.allowed_hosts()),
+                description=external.__doc__)
 
 
 @app.post("/api/research/benchmarks")

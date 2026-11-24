@@ -2,11 +2,12 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { when } from "../shared";
 import type {
-  AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, ControllerSpec, EpisodeRow, Network, Scenario,
+  EnvExportCfg, ExternalCfg, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, ControllerSpec, EpisodeRow, Network, Scenario,
 } from "../types";
 import LiveSim, { ALG_NAME } from "./LiveSim";
+import ExternalPicker, { rememberController, savedControllers } from "../ExternalPicker";
 
-type Tab = "agents" | "watch" | "benchmarks";
+type Tab = "agents" | "watch" | "benchmarks" | "connect";
 type Props = {
   networks: Network[]; scenarios: Scenario[]; onChanged: () => Promise<void> | void; fail: (e: unknown) => void;
 };
@@ -40,12 +41,14 @@ export default function Research(props: Props) {
   const [tab, setTab] = useState<Tab>(() => (sessionStorage.getItem("junction.restab") as Tab) || "agents");
   const [watchAgent, setWatchAgent] = useState<string | null>(null);
   const [benchFor, setBenchFor] = useState<string | null>(null);
+  const [benchExt, setBenchExt] = useState<ExternalCfg | null>(null);
   useEffect(() => { sessionStorage.setItem("junction.restab", tab); }, [tab]);
   const tabs = (
     <div className="seg wide sim-tabs" role="tablist" aria-label="Research">
       <button role="tab" aria-selected={tab === "agents"} onClick={() => setTab("agents")}>Agents and training</button>
       <button role="tab" aria-selected={tab === "watch"} onClick={() => setTab("watch")}>Watch on map</button>
       <button role="tab" aria-selected={tab === "benchmarks"} onClick={() => setTab("benchmarks")}>Benchmarks</button>
+      <button role="tab" aria-selected={tab === "connect"} onClick={() => setTab("connect")}>Your own code</button>
     </div>
   );
   if (tab === "watch")
@@ -60,8 +63,10 @@ export default function Research(props: Props) {
         </div>
         <div className="research-tabs">{tabs}</div>
         {tab === "agents"
-          ? <Agents {...props} onWatch={(id) => { setWatchAgent(id); setTab("watch"); }} onBench={(id) => { setBenchFor(id); setTab("benchmarks"); }} />
-          : <Benchmarks {...props} preAgent={benchFor} />}
+          ? <Agents {...props} onWatch={(id) => { setWatchAgent(id); setTab("watch"); }} onBench={(id) => { setBenchFor(id); setBenchExt(null); setTab("benchmarks"); }} />
+          : tab === "connect"
+          ? <Connect {...props} onBench={(c) => { setBenchExt(c); setBenchFor(null); setTab("benchmarks"); }} />
+          : <Benchmarks {...props} preAgent={benchFor} preExternal={benchExt} />}
       </section>
     </main>
   );
@@ -461,7 +466,7 @@ function BarChart({ rows, unit }: { rows: { label: string; mean: number | null; 
 
 /* ============================== benchmarks ============================== */
 
-function Benchmarks({ networks, scenarios, fail, preAgent }: Props & { preAgent: string | null }) {
+function Benchmarks({ networks, scenarios, fail, preAgent, preExternal }: Props & { preAgent: string | null; preExternal: ExternalCfg | null }) {
   const [list, setList] = useState<BenchInfo[] | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sel, setSel] = useState<string | null>(() => sessionStorage.getItem("junction.bench"));
@@ -472,17 +477,20 @@ function Benchmarks({ networks, scenarios, fail, preAgent }: Props & { preAgent:
   const busy = list?.some((b) => b.status.state === "running" || b.status.state === "queued");
   useEffect(() => { if (!busy) return; const t = setInterval(load, 3000); return () => clearInterval(t); }, [busy]);
 
-  const start = (agentId?: string | null) => {
+  const start = (agentId?: string | null, ext?: ExternalCfg | null) => {
     const ag = agents.find((a) => a.id === agentId);
     const sid = ag?.config.scenario_id ?? scenarios.find((s) => !s.baseline)?.id ?? scenarios[0]?.id ?? "";
     setForm({
-      name: ag ? `${ag.config.name} benchmark` : "Benchmark", scenario_id: sid, heldout_ids: [],
-      controllers: [{ kind: "fixed" }, { kind: "actuated" }, { kind: "max_pressure" }, ...(ag ? [{ kind: "rl" as const, agent_id: ag.id, checkpoint: "final" }] : [])],
+      name: ag ? `${ag.config.name} benchmark` : ext ? `${ext.name} benchmark` : "Benchmark", scenario_id: sid, heldout_ids: [],
+      controllers: [{ kind: "fixed" }, { kind: "actuated" }, { kind: "max_pressure" },
+        ...(ag ? [{ kind: "rl" as const, agent_id: ag.id, checkpoint: "final" }] : []),
+        ...(ext ? [{ kind: "external" as const, external: ext }] : [])],
       reference: 0, demand_levels: [1.0], seeds: 5, first_seed: 1, depart_jitter_s: 300,
     });
     setSel(null);
   };
   useEffect(() => { if (preAgent && agents.length) start(preAgent); }, [preAgent, agents.length]);
+  useEffect(() => { if (preExternal) start(null, preExternal); }, [preExternal]);
 
   if (form) return <BenchForm f={form} set={setForm} scenarios={scenarios} networks={networks} agents={agents} fail={fail} onCancel={() => setForm(null)}
     onCreated={async (b) => { setForm(null); await load(); setSel(b.id); }} />;
@@ -515,6 +523,7 @@ function Benchmarks({ networks, scenarios, fail, preAgent }: Props & { preAgent:
 }
 
 function ctlLabel(c: ControllerSpec, agents: AgentInfo[]) {
+  if (c.kind === "external") return c.external?.name ?? "External controller";
   if (c.kind !== "rl") return BASIC.find((b) => b.kind === c.kind)!.name;
   const a = agents.find((x) => x.id === c.agent_id);
   return `${a?.config.name ?? "Agent"}${c.checkpoint && c.checkpoint !== "final" ? ` (${c.checkpoint === "best" ? "best" : `ep ${Number(c.checkpoint.slice(3, 7))}`})` : ""}`;
@@ -526,6 +535,7 @@ function BenchForm({ f, set, scenarios, networks, agents, fail, onCancel, onCrea
 }) {
   const [busy, setBusy] = useState(false);
   const [addAgent, setAddAgent] = useState("");
+  const [addExt, setAddExt] = useState<ExternalCfg | null>(null);
   const up = (p: Partial<BenchConfig>) => set({ ...f, ...p });
   const hasBasic = (k: ControllerSpec["kind"]) => f.controllers.some((c) => c.kind === k);
   const toggleBasic = (k: ControllerSpec["kind"]) => {
@@ -586,6 +596,22 @@ function BenchForm({ f, set, scenarios, networks, agents, fail, onCancel, onCrea
               <button className="btn secondary small" disabled={!addAgent} onClick={() => { up({ controllers: [...f.controllers, { kind: "rl", agent_id: addAgent, checkpoint: "final" }] }); setAddAgent(""); }}>Add</button>
             </div>)}
           {!agents.length && <p className="small muted">Trained agents appear here once they have a model.</p>}
+          {f.controllers.map((c, i) => c.kind === "external" && (
+            <div key={`x${i}`} className="row nowrap rl-row">
+              <span className="grow"><b>{c.external?.name}</b> <span className="small muted">{c.external?.url}</span></span>
+              <button className="btn quiet small" onClick={() => up({ controllers: f.controllers.filter((_, j) => j !== i), reference: f.reference === i ? 0 : f.reference > i ? f.reference - 1 : f.reference })}>Remove</button>
+            </div>))}
+          {addExt ? (
+            <div className="add-ext">
+              <ExternalPicker value={addExt} onChange={setAddExt} compact />
+              <div className="row nowrap">
+                <button className="btn secondary small" disabled={!addExt.url} onClick={() => { rememberController(addExt); up({ controllers: [...f.controllers, { kind: "external", external: addExt }] }); setAddExt(null); }}>Add controller</button>
+                <button className="btn quiet small" onClick={() => setAddExt(null)}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button className="btn quiet small" onClick={() => setAddExt(savedControllers()[0] ?? { url: "http://localhost:9000/", name: "My controller" })}>Add an external controller</button>
+          )}
           <label className="field block"><span className="label">Compare everything against</span>
             <select value={f.reference} onChange={(e) => up({ reference: Number(e.target.value) })}>
               {f.controllers.map((c, i) => <option key={i} value={i}>{ctlLabel(c, agents)}</option>)}</select></label>
@@ -692,8 +718,105 @@ function BenchDetail({ b, networks, fail, onBack, onChanged }: { b: BenchInfo; n
           <dt>Seeds</dt><dd>{b.manifest.seeds.join(", ")}; departure jitter {b.manifest.depart_jitter_s} s</dd>
           <dt>Scenarios</dt><dd>{b.manifest.scenarios.map((s) => `${networks.find((n) => n.id === s.network)?.name ?? s.network}: ${s.name}`).join("; ")}</dd>
           <dt>Software</dt><dd>Junction {b.manifest.versions.app}, SUMO {b.manifest.versions.sumo}</dd>
+          {(b.manifest.external ?? []).map((x) => <Fragment key={x.url + x.label}><dt>{x.label}</dt><dd>external at {x.url}; decisions every {x.delta_t} s, minimum green {x.min_green} s, amber {x.amber} s, all-red {x.all_red} s, {x.reach_m} m observed</dd></Fragment>)}
           {Object.entries(b.manifest.models).map(([k, v]) => <Fragment key={k}><dt>{v.config.name}</dt><dd>{ALG_NAME[v.config.algorithm]}, {k.split("/")[1]} model, sha {v.sha.slice(0, 12)}</dd></Fragment>)}
         </dl>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== your own code ============================== */
+
+function Connect({ networks, scenarios, fail, onBench }: Props & { onBench: (c: ExternalCfg) => void }) {
+  const [sid, setSid] = useState(() => scenarios.find((s) => !s.baseline)?.id ?? scenarios[0]?.id ?? "");
+  const [cfg, setCfg] = useState<EnvExportCfg>({
+    observation: { reach_m: 60, features: ["queue", "approaching", "out_queue", "phase", "elapsed"] },
+    action: { delta_t: 5, min_green: 10, amber: 3, all_red: 2 }, reward: "pressure", episode_min: 30, demand_scales: [0.8, 1.0, 1.2],
+  });
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  const [ext, setExt] = useState<ExternalCfg>(() => savedControllers()[0] ?? { url: "http://localhost:9000/", name: "My controller" });
+  const [hosts, setHosts] = useState<string[]>([]);
+  useEffect(() => { api.controllerProtocol().then((p) => setHosts(p.allowed_hosts)).catch(() => {}); }, []);
+  const up = <K extends keyof EnvExportCfg>(k: K, v: Partial<EnvExportCfg[K]> | EnvExportCfg[K]) =>
+    setCfg({ ...cfg, [k]: typeof v === "object" && !Array.isArray(v) ? { ...(cfg[k] as object), ...v } : v });
+  const download = async () => {
+    setBusy(true); setDone(null);
+    try { setDone(await api.downloadRlEnv(sid, cfg)); } catch (e) { fail(e); } finally { setBusy(false); }
+  };
+  const feats = cfg.observation.features;
+  return (
+    <div className="form-cols connect">
+      <div className="card">
+        <h2>Train with your own code</h2>
+        <p className="small">Download a scenario as a multi-agent environment for your own RL code (PettingZoo parallel API; works with
+          Stable-Baselines3, RLlib, CleanRL or plain PyTorch). It uses Junction's own observation, safety rules and reward, so agents
+          trained outside face the same problem as agents trained here. Needs only SUMO and NumPy.</p>
+        <label className="field block"><span className="label">Scenario</span>
+          <select value={sid} onChange={(e) => setSid(e.target.value)}>
+            {scenarios.map((s) => <option key={s.id} value={s.id}>{scenLabel(s, networks)}</option>)}
+          </select></label>
+        <fieldset className="field block"><legend className="label">Reward</legend>
+          {REWARDS.map((r) => (
+            <label key={r.id} className="field-check row nowrap">
+              <input type="radio" name="env-reward" checked={cfg.reward === r.id} onChange={() => up("reward", r.id)} />
+              <span><b>{r.name}.</b> {r.text}</span>
+            </label>))}
+        </fieldset>
+        <details className="advanced">
+          <summary>Observation, actions and episodes</summary>
+          <Num label="Observation distance" hint="m" v={cfg.observation.reach_m} min={10} max={300} step={10} set={(n) => up("observation", { reach_m: n })} />
+          {FEATURES.map((f) => (
+            <label key={f.id} className="field-check row nowrap">
+              <input type="checkbox" checked={feats.includes(f.id)}
+                onChange={(e) => up("observation", { features: e.target.checked ? [...feats, f.id] : feats.filter((x) => x !== f.id) })} />
+              <span>{f.name}</span>
+            </label>))}
+          <Num label="Seconds per step" v={cfg.action.delta_t} min={2} max={30} set={(n) => up("action", { delta_t: n })} />
+          <Num label="Minimum green" hint="s" v={cfg.action.min_green} min={5} max={60} set={(n) => up("action", { min_green: n })} />
+          <Num label="Amber" hint="s" v={cfg.action.amber} min={2} max={6} set={(n) => up("action", { amber: n })} />
+          <Num label="All-red" hint="s" v={cfg.action.all_red} min={0} max={5} set={(n) => up("action", { all_red: n })} />
+          <Num label="Episode length" hint="min" v={cfg.episode_min} min={5} max={60} set={(n) => up("episode_min", n)} />
+          <fieldset className="field"><legend className="label">Demand levels to sample</legend>
+            <DemandChips v={cfg.demand_scales} set={(v) => up("demand_scales", v)} /></fieldset>
+        </details>
+        <div className="row">
+          <button className="primary small" onClick={download} disabled={busy || !sid || !feats.length || !cfg.demand_scales.length}>
+            {busy ? "Building the environment…" : "Download environment"}</button>
+        </div>
+        {done && <p className="small good-text" role="status">Downloaded {done}. Unzip it and run <code>python example_random.py</code> to check it works; the README explains the rest.</p>}
+      </div>
+
+      <div className="card">
+        <h2>Benchmark your own controller</h2>
+        <p className="small">Run your controller as a small web service. Every few simulated seconds Junction sends it, for each signal
+          that is free to change, the queue, approaching vehicles and queue beyond each green option; it answers with the option to show
+          next. Junction adds amber and all-red and enforces the minimum green, so any controller is compared safely and fairly.</p>
+        <ol className="small steps-list">
+          <li>Start from the <a href={api.controllerExampleUrl()}>example controller</a> (Python, no packages needed): <code>python external_controller.py --port 9000</code></li>
+          <li>Replace its <code>choose()</code> with your algorithm or trained model.</li>
+          <li>Enter its address below, check the connection, then benchmark it or watch it in the live view.</li>
+        </ol>
+        <ExternalPicker value={ext} onChange={setExt} />
+        <div className="row">
+          <button className="primary small" disabled={!ext.url} onClick={() => { rememberController(ext); onBench(ext); }}>Benchmark it</button>
+        </div>
+        <p className="small muted">For safety this server only calls controllers on {hosts.length ? hosts.join(", ") : "allowed hosts"}.
+          The operator can allow more with the JUNCTION_CONTROLLER_HOSTS setting.</p>
+        <details><summary>Message format</summary>
+          <pre className="config">{`POST your address, JSON:
+{"protocol": "junction-controller/1", "type": "decide", "time_s": 125,
+ "signals": [{"id": "B1", "current": 0, "green_for_s": 22,
+   "options": [{"queue": 4, "approaching": 2, "queue_beyond": 0},
+               {"queue": 9, "approaching": 1, "queue_beyond": 1}]}]}
+
+Answer:
+{"actions": {"B1": 1}}
+
+Also sent: "start" (signals, their green options and lanes, settings)
+and "end" (call statistics). Any 2xx answer is fine for those.`}</pre>
+        </details>
       </div>
     </div>
   );

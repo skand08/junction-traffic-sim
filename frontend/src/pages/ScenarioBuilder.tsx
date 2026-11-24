@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import TrafficCounts from "../TrafficCounts";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
 import EditPanel from "../EditPanel";
 import FindList from "../FindList";
@@ -264,6 +265,7 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
                     onPointerUp={(e) => update({ demand_scale: Number((e.target as HTMLInputElement).value) })}
                     onKeyUp={(e) => update({ demand_scale: Number((e.target as HTMLInputElement).value) })} />
                 </label>
+                <TrafficCounts s={s} roadName={roadName} fail={fail} onScenario={async (x) => { setS(x); await onChanged(); }} />
 
                 <h3>Road and signal changes</h3>
                 {sel && <button className="btn quiet small back" onClick={() => setSel(null)}>← All roads and signals</button>}
