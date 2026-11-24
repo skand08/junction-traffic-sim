@@ -353,3 +353,22 @@ def test_overpass_busy_server_is_retried_then_the_next_one_is_used(tmp_path, mon
     with pytest.raises(importer.ImportError_, match="busy right now"):
         importer.fetch_osm_bbox(bbox, tmp_path / "b.osm")
     srv.shutdown()
+
+
+def test_pressure_looks_past_short_lane_pieces():
+    """The lane right after a signal is often a 0-3 m piece inside a junction cluster. Pressure must
+    count the queue on the road beyond it, or the controller feeds traffic into full roads."""
+    import glob
+    import pytest
+    from trafficsim import runner
+    c.get("/api/networks/ingolstadt21/geometry")            # builds the network if RESCO is available
+    nets = glob.glob(os.path.join(os.environ["TRAFFICSIM_DATA"], "networks", "ingolstadt21", "net.net.xml"))
+    if not nets:
+        pytest.skip("ingolstadt21 not available")
+    fwd, back = runner._lane_reach(nets[0])
+    short = "-315358251#1_1"                                  # 0.2 m piece after signal 30624898 (car lane)
+    assert short in fwd and len(fwd[short]) > 1
+    import sumolib
+    net = sumolib.net.readNet(nets[0])
+    reach = sum(net.getLane(x).getLength() for x in fwd[short])
+    assert reach >= runner.MP_REACH_M
