@@ -163,9 +163,10 @@ export type AgentConfig = {
   observation: { reach_m: number; features: ("queue" | "approaching" | "out_queue" | "phase" | "elapsed")[] };
   action: { delta_t: number; min_green: number; amber: number; all_red: number };
   reward: "pressure" | "queue" | "waiting";
-  training: { episodes: number; episode_min: number; demand_scales: number[]; seed: number; checkpoint_every: number };
+  training: { episodes: number; episode_min: number; demand_scales: number[]; seed: number; checkpoint_every: number;
+    eval_every: number; eval_episodes: number; eval_demand: number; early_stop_patience: number };
   hyper: {
-    lr: number; gamma: number; hidden: number[]; batch: number; buffer: number; learning_starts: number; target_update: number;
+    lr: number; lr_schedule: "constant" | "linear"; gamma: number; hidden: number[]; batch: number; buffer: number; learning_starts: number; target_update: number;
     eps_start: number; eps_end: number; eps_decay_frac: number; clip: number; epochs: number; minibatch: number;
     gae_lambda: number; ent_coef: number; vf_coef: number;
   };
@@ -174,14 +175,15 @@ export type AgentConfig = {
 export type AgentInfo = {
   id: string; config: AgentConfig; checkpoints: string[]; has_model: boolean; has_best: boolean;
   manifest: { created: number; versions: Versions; network: string; net_sha: string; scenario_name?: string; episode_seeds: number[]; numerics: string };
-  status: { state: "queued" | "running" | "paused" | "pausing" | "stopping" | "done" | "stopped" | "failed" | "interrupted";
+  status: { state: "queued" | "running" | "evaluating" | "paused" | "pausing" | "stopping" | "done" | "stopped" | "failed" | "interrupted";
     episode?: number; episodes_done: number; episodes: number; agents?: number; n_obs?: number; n_act?: number;
-    best_episode?: number; error?: string; created: number; finished?: number };
+    best_episode?: number; best_eval_travel_time_s?: number; note?: string; error?: string; created: number; finished?: number };
 };
 export type EpisodeRow = {
   episode: number; demand_scale: number; seed: number; wall_s: number; epsilon: number | null; entropy: number | null;
   reward: number; reward_sum: number; decisions: number; travel_time_s: number | null; arrived: number;
   mean_stopped: number; teleports: number; loss: number | null;
+  lr?: number; eval_travel_time_s?: number | null; eval_reward?: number; eval_arrived?: number;
 };
 export type ExternalCfg = { url: string; name: string; timeout_s?: number; delta_t?: number; min_green?: number; amber?: number; all_red?: number; reach_m?: number };
 export type ControllerSpec = { kind: "fixed" | "actuated" | "max_pressure" | "rl" | "external"; agent_id?: string; checkpoint?: string; label?: string; external?: ExternalCfg };

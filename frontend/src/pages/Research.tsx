@@ -6,84 +6,257 @@ import type {
 } from "../types";
 import LiveSim, { ALG_NAME } from "./LiveSim";
 import ExternalPicker, { rememberController, savedControllers } from "../ExternalPicker";
+import PageHead from "../PageHead";
 
-type Tab = "agents" | "watch" | "benchmarks" | "connect";
+type Tab = "overview" | "train" | "watch" | "benchmark" | "connect";
 type Props = {
   networks: Network[]; scenarios: Scenario[]; onChanged: () => Promise<void> | void; fail: (e: unknown) => void;
 };
 
-const FEATURES: { id: AgentConfig["observation"]["features"][number]; name: string }[] = [
-  { id: "queue", name: "Stopped vehicles on each green's approaches" },
-  { id: "approaching", name: "Moving vehicles approaching" },
-  { id: "out_queue", name: "Stopped vehicles on exits" },
-  { id: "phase", name: "Current green" },
-  { id: "elapsed", name: "Time in current green" },
+const FEATURES: { id: AgentConfig["observation"]["features"][number]; name: string; short: string }[] = [
+  { id: "queue", name: "Stopped vehicles on each green's approaches", short: "Queues" },
+  { id: "approaching", name: "Moving vehicles approaching", short: "Approaching" },
+  { id: "out_queue", name: "Stopped vehicles on exits", short: "Queues beyond" },
+  { id: "phase", name: "Current green", short: "Current green" },
+  { id: "elapsed", name: "Time in current green", short: "Time in green" },
 ];
-const REWARDS: { id: AgentConfig["reward"]; name: string; text: string }[] = [
-  { id: "pressure", name: "Pressure", text: "Minus the difference between vehicles waiting to enter and waiting beyond the exits (PressLight)." },
-  { id: "queue", name: "Queue", text: "Minus the number of stopped vehicles on the approaches." },
-  { id: "waiting", name: "Waiting time", text: "Minus the increase in total waiting time since the last decision." },
+const REWARDS: { id: AgentConfig["reward"]; name: string; text: string; short: string }[] = [
+  { id: "pressure", name: "Pressure", text: "Minus the difference between vehicles waiting to enter and waiting beyond the exits (PressLight).", short: "Balance queues in and out" },
+  { id: "queue", name: "Queue", text: "Minus the number of stopped vehicles on the approaches.", short: "Fewer stopped vehicles" },
+  { id: "waiting", name: "Waiting time", text: "Minus the increase in total waiting time since the last decision.", short: "Less waiting time" },
 ];
 const BASIC: { kind: ControllerSpec["kind"]; name: string }[] = [
   { kind: "fixed", name: "Fixed timing" }, { kind: "actuated", name: "Actuated" }, { kind: "max_pressure", name: "Max-Pressure" },
 ];
 const DEMANDS = [0.6, 0.8, 1.0, 1.2, 1.5];
-const ACTIVE = ["queued", "running", "paused", "pausing", "stopping"];
+const ACTIVE = ["queued", "running", "evaluating", "paused", "pausing", "stopping"];
 
 const scenLabel = (s: Scenario, networks: Network[]) => `${networks.find((n) => n.id === s.base_network)?.name ?? s.base_network}: ${s.name}`;
 const fmt = (v: number | null | undefined, d = 1) => (v == null || !isFinite(v) ? "–" : v.toFixed(d));
 const stateName: Record<string, string> = {
-  queued: "Waiting to start", running: "Training", paused: "Paused", pausing: "Pausing after this episode", stopping: "Stopping after this episode",
+  queued: "Waiting to start", running: "Training", evaluating: "Evaluating", paused: "Paused", pausing: "Pausing after this episode", stopping: "Stopping after this episode",
   done: "Finished", stopped: "Stopped", failed: "Failed", interrupted: "Interrupted", cancelled: "Cancelled",
 };
 
 export default function Research(props: Props) {
-  const [tab, setTab] = useState<Tab>(() => (sessionStorage.getItem("junction.restab") as Tab) || "agents");
-  const [watchAgent, setWatchAgent] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = sessionStorage.getItem("junction.restab");
+    return (["overview", "train", "watch", "benchmark", "connect"].includes(t ?? "") ? t : "overview") as Tab;
+  });
+  const [focus, setFocus] = useState<string | null>(() => sessionStorage.getItem("junction.agent"));
   const [benchFor, setBenchFor] = useState<string | null>(null);
   const [benchExt, setBenchExt] = useState<ExternalCfg | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[] | null>(null);
+  const [benches, setBenches] = useState<BenchInfo[] | null>(null);
+  const [pending, setPending] = useState<"agent" | "bench" | null>(null);   // a "New …" button was pressed
+  const load = () => {
+    api.agents().then(setAgents).catch(props.fail);
+    api.benchmarks().then(setBenches).catch(props.fail);
+  };
+  useEffect(() => { load(); }, []);
   useEffect(() => { sessionStorage.setItem("junction.restab", tab); }, [tab]);
-  const tabs = (
-    <div className="seg wide sim-tabs" role="tablist" aria-label="Research">
-      <button role="tab" aria-selected={tab === "agents"} onClick={() => setTab("agents")}>Agents and training</button>
-      <button role="tab" aria-selected={tab === "watch"} onClick={() => setTab("watch")}>Watch on map</button>
-      <button role="tab" aria-selected={tab === "benchmarks"} onClick={() => setTab("benchmarks")}>Benchmarks</button>
-      <button role="tab" aria-selected={tab === "connect"} onClick={() => setTab("connect")}>Your own code</button>
+  useEffect(() => { focus ? sessionStorage.setItem("junction.agent", focus) : sessionStorage.removeItem("junction.agent"); }, [focus]);
+  const busy = agents?.some((a) => ACTIVE.includes(a.status.state)) || benches?.some((b) => b.status.state === "running" || b.status.state === "queued");
+  useEffect(() => { if (!busy) return; const t = setInterval(load, 3000); return () => clearInterval(t); }, [busy]);
+
+  const training = (agents ?? []).filter((a) => ACTIVE.includes(a.status.state)).length;
+  const benchRunning = (benches ?? []).filter((b) => b.status.state === "running" || b.status.state === "queued").length;
+  const focused = agents?.find((a) => a.id === focus);
+  const open = (t: Tab) => setTab(t);
+  const watch = (id: string) => { setFocus(id); setTab("watch"); };
+  const bench = (id: string) => { setFocus(id); setBenchFor(id); setBenchExt(null); setTab("benchmark"); };
+  const steps: { id: Tab; n: number; name: string; badge?: string }[] = [
+    { id: "train", n: 1, name: "Train", badge: training ? `${training} running` : agents?.length ? String(agents.length) : undefined },
+    { id: "watch", n: 2, name: "Watch" },
+    { id: "benchmark", n: 3, name: "Benchmark", badge: benchRunning ? `${benchRunning} running` : benches?.length ? String(benches.length) : undefined },
+  ];
+  const nav = (
+    <nav className="flow" role="tablist" aria-label="Research">
+      <button role="tab" aria-selected={tab === "overview"} className="flow-home" onClick={() => open("overview")}>Overview</button>
+      <ol className="flow-steps">
+        {steps.map((st) => (
+          <li key={st.id}>
+            <button role="tab" aria-selected={tab === st.id} onClick={() => open(st.id)}>
+              <span className="flow-n" aria-hidden="true">{st.n}</span>{st.name}
+              {st.badge && <span className={`flow-badge ${/running/.test(st.badge) ? "live" : ""}`}>{st.badge}</span>}
+            </button>
+          </li>
+        ))}
+      </ol>
+      <button role="tab" aria-selected={tab === "connect"} className="flow-aside" onClick={() => open("connect")}>Bring your own</button>
+    </nav>
+  );
+  const context = focused && tab !== "overview" && tab !== "connect" && (
+    <div className="context-bar">
+      <span>Agent <b>{focused.config.name}</b> <StateTag s={focused.status.state} />
+        {ACTIVE.includes(focused.status.state) && <span className="small muted"> episode {focused.status.episodes_done} of {focused.status.episodes}</span>}</span>
+      <span className="row nowrap">
+        {tab !== "train" && <button className="btn quiet small" onClick={() => { setTab("train"); }}>Training details</button>}
+        {tab !== "watch" && focused.has_model && <button className="btn quiet small" onClick={() => watch(focused.id)}>Watch it</button>}
+        {tab !== "benchmark" && focused.has_model && <button className="btn quiet small" onClick={() => bench(focused.id)}>Benchmark it</button>}
+        <button className="btn quiet small" aria-label="Clear the selected agent" onClick={() => setFocus(null)}>Clear</button>
+      </span>
     </div>
   );
   if (tab === "watch")
     return <LiveSim networks={props.networks} scenarios={props.scenarios} preset={null} onChanged={props.onChanged} fail={props.fail}
-      tabs={tabs} presetAgent={watchAgent} sessionKey="junction.research.live" />;
+      tabs={<>{nav}{context}</>} presetAgent={focus} sessionKey="junction.research.live" />;
   return (
     <main className="work page-only">
-      <section className="page wide research">
-        <div className="page-head">
-          <h1>Research</h1>
-          <p className="lead">Train signal-control agents with reinforcement learning, then benchmark them against fixed, actuated and max-pressure control on identical traffic.</p>
-        </div>
-        <div className="research-tabs">{tabs}</div>
-        {tab === "agents"
-          ? <Agents {...props} onWatch={(id) => { setWatchAgent(id); setTab("watch"); }} onBench={(id) => { setBenchFor(id); setBenchExt(null); setTab("benchmarks"); }} />
-          : tab === "connect"
-          ? <Connect {...props} onBench={(c) => { setBenchExt(c); setBenchFor(null); setTab("benchmarks"); }} />
-          : <Benchmarks {...props} preAgent={benchFor} preExternal={benchExt} />}
+      <section className="page research">
+        <PageHead title="Research" lead="Train learned signal controllers and benchmark them against standard control on identical traffic."
+          actions={<>
+            <button className="btn secondary small" onClick={() => { setBenchFor(null); setBenchExt(null); setTab("benchmark"); setPending("bench"); }}>New benchmark</button>
+            <button className="primary small" onClick={() => { setTab("train"); setPending("agent"); }}>New agent</button>
+          </>} />
+        {nav}
+        {context}
+        {tab === "overview" && <ResearchOverview {...props} agents={agents} benches={benches} open={open}
+          openAgent={(id) => { setFocus(id); setTab("train"); }} openBench={(id) => { sessionStorage.setItem("junction.bench", id); setTab("benchmark"); }} />}
+        {tab === "train" && <Agents {...props} list={agents} reload={load} sel={focus} setSel={setFocus} startNew={pending === "agent"} onStarted={() => setPending(null)} onWatch={watch} onBench={bench} />}
+        {tab === "benchmark" && <Benchmarks {...props} preAgent={benchFor} preExternal={benchExt} startNew={pending === "bench"}
+          onStarted={() => { setPending(null); setBenchFor(null); setBenchExt(null); }} />}
+        {tab === "connect" && <Connect {...props} onBench={(c) => { setBenchExt(c); setBenchFor(null); setTab("benchmark"); }} />}
       </section>
     </main>
   );
 }
 
+/* ============================== overview ============================== */
+
+function Sparkline({ values, width = 120, height = 28 }: { values: number[]; width?: number; height?: number }) {
+  const v = values.filter((x) => isFinite(x));
+  if (v.length < 2) return <span className="small muted">–</span>;
+  const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  const pts = v.map((x, i) => `${(i / (v.length - 1)) * (width - 4) + 2},${height - 3 - ((x - lo) / span) * (height - 6)}`);
+  return (
+    <svg className="spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <polyline points={pts.join(" ")} fill="none" stroke="var(--sign)" strokeWidth={1.6} />
+      <circle cx={pts[pts.length - 1].split(",")[0]} cy={pts[pts.length - 1].split(",")[1]} r={2.2} fill="var(--sign)" />
+    </svg>
+  );
+}
+
+/** Travel time per episode for each agent, fetched once per change in episodes done. */
+function useLogs(agents: AgentInfo[] | null) {
+  const [logs, setLogs] = useState<Record<string, EpisodeRow[]>>({});
+  const key = (agents ?? []).map((a) => `${a.id}:${a.status.episodes_done}`).join(",");
+  useEffect(() => {
+    (agents ?? []).slice(0, 20).forEach((a) => api.agentLog(a.id).then((l) => setLogs((m) => ({ ...m, [a.id]: l }))).catch(() => {}));
+  }, [key]);
+  return logs;
+}
+
+/** Best non-reference controller per finished benchmark, from its statistics. */
+function useHeadlines(benches: BenchInfo[] | null) {
+  const [heads, setHeads] = useState<Record<string, { label: string; pct: number | null; significant: boolean; ref: string; study: boolean } | null>>({});
+  const key = (benches ?? []).map((b) => `${b.id}:${b.status.done}`).join(",");
+  useEffect(() => {
+    (benches ?? []).filter((b) => b.status.done > 0).slice(0, 10).forEach((b) => api.benchStats(b.id).then((st) => {
+      const c = st.conditions.find((x) => !x.heldout && x.demand === 1) ?? st.conditions[0];
+      const all = (c?.rows ?? []).filter((r) => r.controller !== st.reference && r.vs_reference?.mean_travel_time_s?.pct_change != null);
+      // feature the controllers under study (trained or external); fall back to the best standard one
+      const study = all.filter((r) => ["rl", "external"].includes(b.config.controllers[r.controller]?.kind));
+      const rows = study.length ? study : all;
+      const best = rows.sort((x, y) => (x.vs_reference!.mean_travel_time_s.pct_change! - y.vs_reference!.mean_travel_time_s.pct_change!))[0];
+      setHeads((h) => ({ ...h, [b.id]: best ? { label: best.label, pct: best.vs_reference!.mean_travel_time_s.pct_change,
+        significant: best.vs_reference!.mean_travel_time_s.significant, ref: st.labels[st.reference], study: study.length > 0 } : null }));
+    }).catch(() => {}));
+  }, [key]);
+  return heads;
+}
+
+function Headline({ h }: { h?: { label: string; pct: number | null; significant: boolean; ref: string; study: boolean } | null }) {
+  if (!h || h.pct == null) return <span className="small muted">–</span>;
+  return <span><b>{h.label}</b> <span className={h.significant ? (h.pct < 0 ? "good-text" : "warn-text") : "muted"}>
+    {h.pct > 0 ? "+" : ""}{h.pct.toFixed(1)}%</span> <span className="small muted">travel time vs {h.ref.toLowerCase()}</span></span>;
+}
+
+function ResearchOverview({ agents, benches, open, openAgent, openBench }: Props & {
+  agents: AgentInfo[] | null; benches: BenchInfo[] | null; open: (t: Tab) => void; openAgent: (id: string) => void; openBench: (id: string) => void;
+}) {
+  const logs = useLogs(agents);
+  const heads = useHeadlines(benches);
+  if (!agents || !benches) return <p className="status-line" role="status"><span className="spinner" aria-hidden="true" />Loading…</p>;
+  const training = agents.filter((a) => ACTIVE.includes(a.status.state));
+  const trained = agents.filter((a) => a.has_model);
+  const bestHead = Object.values(heads).filter((h): h is NonNullable<typeof h> => !!h && h.study && h.pct != null && h.significant)
+    .sort((x, y) => x.pct! - y.pct!)[0];
+  return (
+    <>
+      <div className="stats">
+        <button className="stat" onClick={() => open("train")}><span className="stat-num">{agents.length}{training.length > 0 && <small>{training.length} training</small>}</span><span className="stat-name">Agents</span></button>
+        <button className="stat" onClick={() => open("train")}><span className="stat-num">{trained.length}</span><span className="stat-name">Trained models</span></button>
+        <button className="stat" onClick={() => open("benchmark")}><span className="stat-num">{benches.length}</span><span className="stat-name">Benchmarks</span></button>
+        <div className="stat"><span className="stat-num">{bestHead ? `${bestHead.pct! > 0 ? "+" : ""}${bestHead.pct!.toFixed(1)}%` : "–"}</span>
+          <span className="stat-name">Best result under study</span><span className="stat-note">{bestHead ? `${bestHead.label}, travel time vs ${bestHead.ref.toLowerCase()}` : "Benchmark a trained agent to see one"}</span></div>
+      </div>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-head"><h2>Agents</h2><button className="btn quiet small" onClick={() => open("train")}>All agents</button></div>
+          {agents.length === 0 ? (
+            <div className="empty">No agents yet. Train one on any scenario; it takes seconds on the practice grid.<br />
+              <button className="primary small" onClick={() => open("train")}>Train an agent</button></div>
+          ) : (
+            <ul className="agent-rows">
+              {agents.slice(0, 6).map((a) => {
+                const l = logs[a.id] ?? [];
+                const tt = l.map((r) => r.eval_travel_time_s ?? r.travel_time_s ?? NaN);
+                const live = ACTIVE.includes(a.status.state);
+                return (
+                  <li key={a.id}>
+                    <button className="agent-row" onClick={() => openAgent(a.id)}>
+                      <span className="agent-row-name"><b>{a.config.name}</b><span className="small muted">{ALG_NAME[a.config.algorithm]}, {a.status.agents ?? "?"} signals</span></span>
+                      <span className="cell-progress">
+                        <span className="small">{live ? <><StateTag s={a.status.state} /> {a.status.episodes_done}/{a.status.episodes}</> : <StateTag s={a.status.state} />}</span>
+                        <span className="progress thin"><i style={{ width: `${(100 * a.status.episodes_done) / (a.status.episodes || 1)}%` }} /></span>
+                      </span>
+                      <span className="agent-row-trend"><Sparkline values={tt} />{tt.some(isFinite) && <span className="small muted">{fmt(tt.filter(isFinite).slice(-1)[0])} s</span>}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="stack">
+          <div className="card">
+            <div className="card-head"><h2>Benchmarks</h2><button className="btn quiet small" onClick={() => open("benchmark")}>All benchmarks</button></div>
+            {benches.length === 0 ? <div className="empty">No benchmarks yet.<br /><button className="btn secondary small" onClick={() => open("benchmark")}>Set one up</button></div> : (
+              <ul className="bench-rows">
+                {benches.slice(0, 4).map((b) => (
+                  <li key={b.id}><button className="bench-row" onClick={() => openBench(b.id)}>
+                    <span><b>{b.config.name}</b> <StateTag s={b.status.state} /></span>
+                    {b.status.state === "running" || b.status.state === "queued"
+                      ? <span className="progress thin"><i style={{ width: `${(100 * b.status.done) / (b.status.total || 1)}%` }} /></span>
+                      : <Headline h={heads[b.id]} />}
+                  </button></li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="card">
+            <h2>Workflow</h2>
+            <ol className="checklist">
+              <li className={trained.length ? "done" : ""}><span className="tick">{trained.length ? "✓" : ""}</span><span><span className="step-name">Train an agent</span><br /><span className="small muted">On any scenario, with evaluation runs</span></span><button className="btn quiet small" onClick={() => open("train")}>Train</button></li>
+              <li className={trained.length ? "done" : ""}><span className="tick">{trained.length ? "✓" : ""}</span><span><span className="step-name">Watch its decisions</span><br /><span className="small muted">Live on the map, signal by signal</span></span><button className="btn quiet small" onClick={() => open("watch")}>Watch</button></li>
+              <li className={benches.some((b) => b.status.state === "done") ? "done" : ""}><span className="tick">{benches.some((b) => b.status.state === "done") ? "✓" : ""}</span><span><span className="step-name">Benchmark it</span><br /><span className="small muted">Against fixed, actuated and max-pressure</span></span><button className="btn quiet small" onClick={() => open("benchmark")}>Benchmark</button></li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ============================== agents ============================== */
 
-function Agents({ networks, scenarios, fail, onWatch, onBench }: Props & { onWatch: (id: string) => void; onBench: (id: string) => void }) {
-  const [list, setList] = useState<AgentInfo[] | null>(null);
-  const [sel, setSel] = useState<string | null>(() => sessionStorage.getItem("junction.agent"));
+function Agents({ networks, scenarios, fail, list, reload, sel, setSel, startNew, onStarted, onWatch, onBench }: Props & {
+  list: AgentInfo[] | null; reload: () => void; sel: string | null; setSel: (id: string | null) => void; startNew: boolean; onStarted: () => void;
+  onWatch: (id: string) => void; onBench: (id: string) => void;
+}) {
   const [draft, setDraft] = useState<AgentConfig | null>(null);
-  const load = () => api.agents().then(setList).catch(fail);
-  useEffect(() => { load(); }, []);
-  useEffect(() => { sel ? sessionStorage.setItem("junction.agent", sel) : sessionStorage.removeItem("junction.agent"); }, [sel]);
-  const busy = list?.some((a) => ACTIVE.includes(a.status.state));
-  useEffect(() => { if (!busy) return; const t = setInterval(load, 3000); return () => clearInterval(t); }, [busy]);
-
+  const logs = useLogs(list);
   const newAgent = async (base?: AgentInfo) => {
     try {
       if (base) { setDraft({ ...structuredClone(base.config), name: `${base.config.name} variant`, parent_id: base.id, note: "" }); }
@@ -95,35 +268,37 @@ function Agents({ networks, scenarios, fail, onWatch, onBench }: Props & { onWat
       setSel(null);
     } catch (e) { fail(e); }
   };
+  useEffect(() => { if (startNew) { onStarted(); newAgent(); } }, [startNew]);
 
   if (draft) return <AgentForm draft={draft} setDraft={setDraft} scenarios={scenarios} networks={networks} parent={list?.find((a) => a.id === draft.parent_id)} fail={fail}
-    onCancel={() => setDraft(null)} onCreated={async (a) => { setDraft(null); await load(); setSel(a.id); }} />;
+    onCancel={() => setDraft(null)} onCreated={async (a) => { setDraft(null); await reload(); setSel(a.id); }} />;
   const cur = list?.find((a) => a.id === sel);
-  if (cur) return <AgentDetail a={cur} scenarios={scenarios} networks={networks} fail={fail} onBack={() => setSel(null)} onChanged={load}
+  if (cur) return <AgentDetail a={cur} scenarios={scenarios} networks={networks} fail={fail} onBack={() => setSel(null)} onChanged={reload}
     onVariant={() => newAgent(cur)} onWatch={() => onWatch(cur.id)} onBench={() => onBench(cur.id)} />;
 
   return (
     <>
-      <div className="row spread page-tools">
-        <p className="small muted">{list ? `${list.length} agent${list.length === 1 ? "" : "s"}` : ""}</p>
-        <button className="btn primary" onClick={() => newAgent()} disabled={!scenarios.length}>New agent</button>
-      </div>
       {!list && <p className="status-line" role="status"><span className="spinner" aria-hidden="true" />Loading agents…</p>}
-      {list && !list.length && <p className="small muted">No agents yet. Create one to train a controller on one of your scenarios.</p>}
+      {list && !list.length && <div className="card"><div className="empty">No agents yet. Choose a scenario and a method; a quick test trains in seconds on the practice grid.<br />
+        <button className="primary small" onClick={() => newAgent()}>New agent</button></div></div>}
       {list && list.length > 0 && (
         <table className="library">
-          <thead><tr><th>Name</th><th>Method</th><th>Scenario</th><th>Status</th><th className="n-col">Episodes</th><th>Created</th></tr></thead>
+          <thead><tr><th>Name</th><th>Method</th><th>Scenario</th><th>Progress</th><th>Travel time per episode</th><th>Created</th></tr></thead>
           <tbody>
-            {list.map((a) => (
-              <tr key={a.id} tabIndex={0} onClick={() => setSel(a.id)} onKeyDown={(e) => e.key === "Enter" && setSel(a.id)}>
-                <td><b>{a.config.name}</b>{a.config.parent_id && <span className="chip">variant</span>}</td>
-                <td>{ALG_NAME[a.config.algorithm]}, {a.config.sharing === "shared" ? "shared" : "per signal"}</td>
-                <td>{(() => { const s = scenarios.find((x) => x.id === a.config.scenario_id); return s ? scenLabel(s, networks) : a.manifest.scenario_name ?? a.config.scenario_id; })()}</td>
-                <td><StateTag s={a.status.state} /></td>
-                <td className="n-col">{a.status.episodes_done} / {a.status.episodes}</td>
-                <td>{when(a.status.created)}</td>
-              </tr>
-            ))}
+            {list.map((a) => {
+              const tt = (logs[a.id] ?? []).map((r) => r.eval_travel_time_s ?? r.travel_time_s ?? NaN);
+              return (
+                <tr key={a.id} tabIndex={0} onClick={() => setSel(a.id)} onKeyDown={(e) => e.key === "Enter" && setSel(a.id)}>
+                  <td><b>{a.config.name}</b>{a.config.parent_id && <span className="chip">variant</span>}</td>
+                  <td>{ALG_NAME[a.config.algorithm]}, {a.config.sharing === "shared" ? "shared" : "per signal"}</td>
+                  <td>{(() => { const s = scenarios.find((x) => x.id === a.config.scenario_id); return s ? scenLabel(s, networks) : a.manifest.scenario_name ?? a.config.scenario_id; })()}</td>
+                  <td className="cell-progress"><span className="small"><StateTag s={a.status.state} /> {a.status.episodes_done}/{a.status.episodes}</span>
+                    <span className="progress thin"><i style={{ width: `${(100 * a.status.episodes_done) / (a.status.episodes || 1)}%` }} /></span></td>
+                  <td><span className="row nowrap"><Sparkline values={tt} />{tt.some(isFinite) && <span className="small">{fmt(tt.filter(isFinite).slice(-1)[0])} s</span>}</span></td>
+                  <td>{when(a.status.created)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -145,6 +320,17 @@ function Num({ label, v, set, min, max, step = 1, hint }: { label: string; v: nu
   );
 }
 
+const PRESETS: { id: string; name: string; note: string; t: Partial<AgentConfig["training"]>; h: Partial<AgentConfig["hyper"]> }[] = [
+  { id: "quick", name: "Quick test", note: "10 short episodes", t: { episodes: 10, episode_min: 10, eval_every: 0, early_stop_patience: 0, checkpoint_every: 5 }, h: { lr_schedule: "constant" } },
+  { id: "standard", name: "Standard", note: "30 episodes, evaluated every 5", t: { episodes: 30, episode_min: 30, eval_every: 5, eval_episodes: 1, early_stop_patience: 0, checkpoint_every: 5 }, h: { lr_schedule: "constant" } },
+  { id: "thorough", name: "Thorough", note: "100 episodes, early stopping", t: { episodes: 100, episode_min: 30, eval_every: 5, eval_episodes: 2, early_stop_patience: 6, checkpoint_every: 10 }, h: { lr_schedule: "linear" } },
+];
+const ALG_TEXT: Record<string, string> = {
+  dqn: "Learns the value of each green from replayed experience.",
+  double_dqn: "DQN with less over-estimation; a good default.",
+  ppo: "Learns a probability for each green; stable, needs more episodes.",
+};
+
 function AgentForm({ draft, setDraft, scenarios, networks, parent, fail, onCancel, onCreated }: {
   draft: AgentConfig; setDraft: (d: AgentConfig) => void; scenarios: Scenario[]; networks: Network[]; parent?: AgentInfo; fail: (e: unknown) => void;
   onCancel: () => void; onCreated: (a: AgentInfo) => void;
@@ -155,112 +341,179 @@ function AgentForm({ draft, setDraft, scenarios, networks, parent, fail, onCance
     setDraft({ ...d, [k]: typeof v === "object" && !Array.isArray(v) ? { ...(d[k] as object), ...v } : v });
   const isPPO = d.algorithm === "ppo";
   const changed = parent ? diffCfg(parent.config, d) : [];
+  const preset = PRESETS.find((p) => Object.entries(p.t).every(([k, v]) => (d.training as any)[k] === v) && Object.entries(p.h).every(([k, v]) => (d.hyper as any)[k] === v));
   const submit = async () => {
     setBusy(true);
     try { onCreated(await api.trainAgent(d)); } catch (e) { fail(e); } finally { setBusy(false); }
   };
   const feats = d.observation.features;
+  const tr = d.training;
+  const evals = tr.eval_every ? Math.ceil(tr.episodes / tr.eval_every) * tr.eval_episodes : 0;
+  const simHours = ((tr.episodes + evals) * tr.episode_min) / 60;
+  const scen = scenarios.find((x) => x.id === d.scenario_id);
+  const ok = !!feats.length && !!d.scenario_id && !!tr.demand_scales.length;
   return (
-    <div className="research-form">
-      <div className="row spread">
-        <h2>{parent ? `Variant of ${parent.config.name}` : "New agent"}</h2>
-        <button className="btn quiet" onClick={onCancel}>Cancel</button>
-      </div>
-      {parent && <p className="small muted">An ablation: change one or two settings and benchmark both agents. {changed.length ? `Changed: ${changed.join(", ")}.` : "Nothing changed yet."}</p>}
-
-      <div className="form-cols">
+    <div className="agent-form">
+      <div className="stack">
+        {parent && <p className="banner-inline">Variant of <b>{parent.config.name}</b>. {changed.length ? `Changed: ${changed.join(", ")}.` : "Change one or two settings, then benchmark both."}</p>}
         <div className="card">
           <h2>Basics</h2>
-          <label className="field block"><span className="label">Name</span>
-            <input className="text" value={d.name} onChange={(e) => up("name", e.target.value)} /></label>
-          <label className="field block"><span className="label">Train on scenario</span>
-            <select value={d.scenario_id} onChange={(e) => up("scenario_id", e.target.value)}>
-              {scenarios.map((s) => <option key={s.id} value={s.id}>{scenLabel(s, networks)}</option>)}
-            </select></label>
-          <fieldset className="field"><legend className="label">Method</legend>
-            <div className="seg wide" role="radiogroup">
-              {(["dqn", "double_dqn", "ppo"] as const).map((a) => (
-                <button key={a} role="radio" aria-checked={d.algorithm === a} onClick={() => up("algorithm", a)}>{ALG_NAME[a]}</button>))}
+          <div className="form-2">
+            <label className="field block"><span className="label">Name</span>
+              <input className="text" value={d.name} onChange={(e) => up("name", e.target.value)} /></label>
+            <label className="field block"><span className="label">Train on</span>
+              <select value={d.scenario_id} onChange={(e) => up("scenario_id", e.target.value)}>
+                {scenarios.map((s) => <option key={s.id} value={s.id}>{scenLabel(s, networks)}</option>)}
+              </select></label>
+          </div>
+          <div className="form-2">
+            <fieldset className="field block"><legend className="label">Method</legend>
+              <div className="seg wide" role="radiogroup">
+                {(["dqn", "double_dqn", "ppo"] as const).map((a) => (
+                  <button key={a} role="radio" aria-checked={d.algorithm === a} onClick={() => up("algorithm", a)}>{ALG_NAME[a]}</button>))}
+              </div>
+              <p className="field-hint">{ALG_TEXT[d.algorithm]}</p>
+            </fieldset>
+            <fieldset className="field block"><legend className="label">Signals learn</legend>
+              <div className="seg wide" role="radiogroup">
+                <button role="radio" aria-checked={d.sharing === "shared"} onClick={() => up("sharing", "shared")}>Together</button>
+                <button role="radio" aria-checked={d.sharing === "independent"} onClick={() => up("sharing", "independent")}>Separately</button>
+              </div>
+              <p className="field-hint">{d.sharing === "shared" ? "One shared network; also runs on other networks." : "One network per signal; this network only."}</p>
+            </fieldset>
+          </div>
+        </div>
+
+        <div className="card">
+          <h2>What the agent sees and does</h2>
+          <div className="form-2">
+            <div>
+              <Num label="Looks this far back" hint="m" v={d.observation.reach_m} min={10} max={300} step={10} set={(n) => up("observation", { reach_m: n })} />
+              <div className="chip-checks" role="group" aria-label="Measurements">
+                {FEATURES.map((f) => (
+                  <label key={f.id} className={`chip-check ${feats.includes(f.id) ? "on" : ""}`}>
+                    <input type="checkbox" checked={feats.includes(f.id)}
+                      onChange={(e) => up("observation", { features: e.target.checked ? [...feats, f.id] : feats.filter((x) => x !== f.id) })} />
+                    {f.short}
+                  </label>
+                ))}
+              </div>
+              {!feats.length && <p className="small warn-text">Choose at least one.</p>}
             </div>
-            <p className="small muted">{isPPO ? "Policy gradient with a clipped objective; learns a probability for each green." : d.algorithm === "double_dqn" ? "DQN that picks the next action with the online network and values it with the target network, which reduces over-estimation." : "Learns the value of each green from replayed experience, with a target network."}</p>
-          </fieldset>
-          <fieldset className="field"><legend className="label">Agents</legend>
-            <div className="seg wide" role="radiogroup">
-              <button role="radio" aria-checked={d.sharing === "shared"} onClick={() => up("sharing", "shared")}>One shared network</button>
-              <button role="radio" aria-checked={d.sharing === "independent"} onClick={() => up("sharing", "independent")}>One per signal</button>
+            <div>
+              <Num label="Decides every" hint="s" v={d.action.delta_t} min={2} max={30} set={(n) => up("action", { delta_t: n })} />
+              <Num label="Minimum green" hint="s" v={d.action.min_green} min={5} max={60} set={(n) => up("action", { min_green: n })} />
+              <Num label="Amber" hint="s" v={d.action.amber} min={2} max={6} set={(n) => up("action", { amber: n })} />
+              <Num label="All-red" hint="s" v={d.action.all_red} min={0} max={5} set={(n) => up("action", { all_red: n })} />
             </div>
-            <p className="small muted">Every signal is an agent. {d.sharing === "shared" ? "They share parameters and learn from each other's experience; the model also runs on other networks." : "Each signal learns its own network; the model only runs on this network."}</p>
+          </div>
+          <fieldset className="field block"><legend className="label">Reward</legend>
+            <div className="choice-cards" role="radiogroup">
+              {REWARDS.map((r) => (
+                <button key={r.id} role="radio" aria-checked={d.reward === r.id} className="choice-card" onClick={() => up("reward", r.id)}>
+                  <b>{r.name}</b><span>{r.short}</span>
+                </button>
+              ))}
+            </div>
           </fieldset>
         </div>
 
         <div className="card">
-          <h2>Observation</h2>
-          <Num label="Observation distance" hint="m from the stop line" v={d.observation.reach_m} min={10} max={300} step={10} set={(n) => up("observation", { reach_m: n })} />
-          {FEATURES.map((f) => (
-            <label key={f.id} className="field-check row nowrap">
-              <input type="checkbox" checked={feats.includes(f.id)}
-                onChange={(e) => up("observation", { features: e.target.checked ? [...feats, f.id] : feats.filter((x) => x !== f.id) })} />
-              <span>{f.name}</span>
-            </label>
-          ))}
-          {!feats.length && <p className="small warn-text">Choose at least one.</p>}
-          <h2>Actions and safety</h2>
-          <p className="small muted">Each decision picks which green to show next. A change always runs amber then all-red, and no green is cut before its minimum.</p>
-          <Num label="Seconds between decisions" v={d.action.delta_t} min={2} max={30} set={(n) => up("action", { delta_t: n })} />
-          <Num label="Minimum green" hint="s" v={d.action.min_green} min={5} max={60} set={(n) => up("action", { min_green: n })} />
-          <Num label="Amber" hint="s" v={d.action.amber} min={2} max={6} set={(n) => up("action", { amber: n })} />
-          <Num label="All-red" hint="s" v={d.action.all_red} min={0} max={5} set={(n) => up("action", { all_red: n })} />
+          <h2>Training and evaluation</h2>
+          <div className="form-2">
+            <div>
+              <Num label="Episodes" v={tr.episodes} min={1} max={2000} set={(n) => up("training", { episodes: n })} />
+              <Num label="Traffic per episode" hint="min" v={tr.episode_min} min={5} max={60} set={(n) => up("training", { episode_min: n })} />
+              <fieldset className="field block"><legend className="label">Demand levels</legend>
+                <DemandChips v={tr.demand_scales} set={(v) => up("training", { demand_scales: v })} /></fieldset>
+              <Num label="Seed" v={tr.seed} min={1} max={1000000} set={(n) => up("training", { seed: n })} />
+            </div>
+            <div>
+              <Num label="Evaluate every" hint="episodes, 0 = off" v={tr.eval_every} min={0} max={100} set={(n) => up("training", { eval_every: n })} />
+              <Num label="Evaluation runs" v={tr.eval_episodes} min={1} max={5} set={(n) => up("training", { eval_episodes: n })} />
+              <Num label="Stop after no gain in" hint="evaluations, 0 = never" v={tr.early_stop_patience} min={0} max={50} set={(n) => up("training", { early_stop_patience: n })} />
+              <Num label="Checkpoint every" hint="episodes" v={tr.checkpoint_every} min={1} max={500} set={(n) => up("training", { checkpoint_every: n })} />
+            </div>
+          </div>
+          <p className="field-hint">Evaluation runs the agent without exploring on the same unseen traffic each time; the best model is chosen on it.</p>
         </div>
 
         <div className="card">
-          <h2>Reward</h2>
-          {REWARDS.map((r) => (
-            <label key={r.id} className="field-check row nowrap">
-              <input type="radio" name="reward" checked={d.reward === r.id} onChange={() => up("reward", r.id)} />
-              <span><b>{r.name}.</b> {r.text}</span>
-            </label>
-          ))}
-          <h2>Training</h2>
-          <Num label="Episodes" v={d.training.episodes} min={1} max={2000} set={(n) => up("training", { episodes: n })} />
-          <Num label="Traffic per episode" hint="min" v={d.training.episode_min} min={5} max={60} set={(n) => up("training", { episode_min: n })} />
-          <fieldset className="field"><legend className="label">Demand levels to train on</legend>
-            <DemandChips v={d.training.demand_scales} set={(v) => up("training", { demand_scales: v })} />
-          </fieldset>
-          <Num label="Seed" v={d.training.seed} min={1} max={1000000} set={(n) => up("training", { seed: n })} />
-          <Num label="Save a checkpoint every" hint="episodes" v={d.training.checkpoint_every} min={1} max={500} set={(n) => up("training", { checkpoint_every: n })} />
-          <Num label="Learning rate" v={d.hyper.lr} min={0.00001} max={0.1} step={0.0001} set={(n) => up("hyper", { lr: n })} />
-          <Num label="Discount factor" v={d.hyper.gamma} min={0} max={0.999} step={0.01} set={(n) => up("hyper", { gamma: n })} />
+          <h2>Learning</h2>
+          <div className="form-2">
+            <div>
+              <Num label="Learning rate" v={d.hyper.lr} min={0.00001} max={0.1} step={0.0001} set={(n) => up("hyper", { lr: n })} />
+              <fieldset className="field block"><legend className="label">Learning rate over time</legend>
+                <div className="seg wide" role="radiogroup">
+                  <button role="radio" aria-checked={d.hyper.lr_schedule === "constant"} onClick={() => up("hyper", { lr_schedule: "constant" })}>Constant</button>
+                  <button role="radio" aria-checked={d.hyper.lr_schedule === "linear"} onClick={() => up("hyper", { lr_schedule: "linear" })}>Falls to 10%</button>
+                </div></fieldset>
+            </div>
+            <div>
+              <Num label="Discount factor" v={d.hyper.gamma} min={0} max={0.999} step={0.01} set={(n) => up("hyper", { gamma: n })} />
+              <label className="field"><span className="label">Hidden layers</span>
+                <input className="text short" value={d.hyper.hidden.join(", ")}
+                  onChange={(e) => up("hyper", { hidden: e.target.value.split(",").map((x) => parseInt(x)).filter((x) => x > 0) })} /></label>
+            </div>
+          </div>
           <details className="advanced">
-            <summary>Advanced settings</summary>
-            <label className="field"><span className="label">Hidden layers <span className="small muted">comma separated</span></span>
-              <input className="text short" value={d.hyper.hidden.join(", ")}
-                onChange={(e) => up("hyper", { hidden: e.target.value.split(",").map((x) => parseInt(x)).filter((x) => x > 0) })} /></label>
-            {!isPPO ? (<>
-              <Num label="Batch size" v={d.hyper.batch} min={8} max={1024} set={(n) => up("hyper", { batch: n })} />
-              <Num label="Replay buffer" v={d.hyper.buffer} min={1000} max={1000000} step={1000} set={(n) => up("hyper", { buffer: n })} />
-              <Num label="Learning starts after" hint="steps" v={d.hyper.learning_starts} min={0} max={100000} set={(n) => up("hyper", { learning_starts: n })} />
-              <Num label="Target network update" hint="steps" v={d.hyper.target_update} min={10} max={100000} set={(n) => up("hyper", { target_update: n })} />
-              <Num label="Exploration start" v={d.hyper.eps_start} min={0} max={1} step={0.05} set={(n) => up("hyper", { eps_start: n })} />
-              <Num label="Exploration end" v={d.hyper.eps_end} min={0} max={1} step={0.01} set={(n) => up("hyper", { eps_end: n })} />
-              <Num label="Exploration decays over" hint="share of training" v={d.hyper.eps_decay_frac} min={0.05} max={1} step={0.05} set={(n) => up("hyper", { eps_decay_frac: n })} />
-            </>) : (<>
-              <Num label="Clip range" v={d.hyper.clip} min={0.05} max={0.5} step={0.05} set={(n) => up("hyper", { clip: n })} />
-              <Num label="Epochs per update" v={d.hyper.epochs} min={1} max={20} set={(n) => up("hyper", { epochs: n })} />
-              <Num label="Minibatch" v={d.hyper.minibatch} min={16} max={4096} set={(n) => up("hyper", { minibatch: n })} />
-              <Num label="GAE lambda" v={d.hyper.gae_lambda} min={0} max={1} step={0.01} set={(n) => up("hyper", { gae_lambda: n })} />
-              <Num label="Entropy weight" v={d.hyper.ent_coef} min={0} max={0.2} step={0.005} set={(n) => up("hyper", { ent_coef: n })} />
-              <Num label="Value loss weight" v={d.hyper.vf_coef} min={0} max={2} step={0.1} set={(n) => up("hyper", { vf_coef: n })} />
-            </>)}
+            <summary>{isPPO ? "PPO settings" : "DQN settings"}</summary>
+            <div className="form-2">
+              {!isPPO ? (<>
+                <div>
+                  <Num label="Batch size" v={d.hyper.batch} min={8} max={1024} set={(n) => up("hyper", { batch: n })} />
+                  <Num label="Replay buffer" v={d.hyper.buffer} min={1000} max={1000000} step={1000} set={(n) => up("hyper", { buffer: n })} />
+                  <Num label="Learning starts after" hint="steps" v={d.hyper.learning_starts} min={0} max={100000} set={(n) => up("hyper", { learning_starts: n })} />
+                  <Num label="Target update" hint="steps" v={d.hyper.target_update} min={10} max={100000} set={(n) => up("hyper", { target_update: n })} />
+                </div>
+                <div>
+                  <Num label="Exploration start" v={d.hyper.eps_start} min={0} max={1} step={0.05} set={(n) => up("hyper", { eps_start: n })} />
+                  <Num label="Exploration end" v={d.hyper.eps_end} min={0} max={1} step={0.01} set={(n) => up("hyper", { eps_end: n })} />
+                  <Num label="Exploration falls over" hint="share" v={d.hyper.eps_decay_frac} min={0.05} max={1} step={0.05} set={(n) => up("hyper", { eps_decay_frac: n })} />
+                </div>
+              </>) : (<>
+                <div>
+                  <Num label="Clip range" v={d.hyper.clip} min={0.05} max={0.5} step={0.05} set={(n) => up("hyper", { clip: n })} />
+                  <Num label="Epochs per update" v={d.hyper.epochs} min={1} max={20} set={(n) => up("hyper", { epochs: n })} />
+                  <Num label="Minibatch" v={d.hyper.minibatch} min={16} max={4096} set={(n) => up("hyper", { minibatch: n })} />
+                </div>
+                <div>
+                  <Num label="GAE lambda" v={d.hyper.gae_lambda} min={0} max={1} step={0.01} set={(n) => up("hyper", { gae_lambda: n })} />
+                  <Num label="Entropy weight" v={d.hyper.ent_coef} min={0} max={0.2} step={0.005} set={(n) => up("hyper", { ent_coef: n })} />
+                  <Num label="Value loss weight" v={d.hyper.vf_coef} min={0} max={2} step={0.1} set={(n) => up("hyper", { vf_coef: n })} />
+                </div>
+              </>)}
+            </div>
           </details>
           <label className="field block"><span className="label">Note</span>
-            <textarea className="text" rows={2} value={d.note ?? ""} onChange={(e) => up("note", e.target.value)} /></label>
+            <textarea className="text" rows={2} value={d.note ?? ""} placeholder="What this run is testing" onChange={(e) => up("note", e.target.value)} /></label>
         </div>
       </div>
-      <div className="row">
-        <button className="btn primary" disabled={busy || !feats.length || !d.scenario_id || !d.training.demand_scales.length} onClick={submit}>
-          {busy ? "Preparing the network…" : "Start training"}</button>
-        <span className="small muted">About {Math.round(d.training.episodes * d.training.episode_min * 0.08)}–{Math.round(d.training.episodes * d.training.episode_min * 0.25)} min, depending on network size.</span>
-      </div>
+
+      <aside className="form-summary card">
+        <h2>{parent ? "New variant" : "New agent"}</h2>
+        <fieldset className="field block"><legend className="label">Preset</legend>
+          <div className="preset-list" role="radiogroup">
+            {PRESETS.map((p) => (
+              <button key={p.id} role="radio" aria-checked={preset?.id === p.id} className="preset"
+                onClick={() => setDraft({ ...d, training: { ...d.training, ...p.t }, hyper: { ...d.hyper, ...p.h } })}>
+                <b>{p.name}</b><span>{p.note}</span>
+              </button>
+            ))}
+          </div>
+          {!preset && <p className="field-hint">Custom settings.</p>}
+        </fieldset>
+        <dl className="facts">
+          <dt>Scenario</dt><dd>{scen ? scenLabel(scen, networks) : "–"}</dd>
+          <dt>Method</dt><dd>{ALG_NAME[d.algorithm]}, signals learn {d.sharing === "shared" ? "together" : "separately"}</dd>
+          <dt>Reward</dt><dd>{REWARDS.find((r) => r.id === d.reward)?.name}</dd>
+          <dt>Training</dt><dd>{tr.episodes} × {tr.episode_min} min{tr.demand_scales.length > 1 ? `, ${tr.demand_scales.length} demand levels` : ""}</dd>
+          <dt>Evaluation</dt><dd>{tr.eval_every ? `every ${tr.eval_every} episodes${tr.early_stop_patience ? `, stops after ${tr.early_stop_patience} without gain` : ""}` : "off"}</dd>
+          <dt>Simulated</dt><dd>{simHours < 1 ? `${Math.round(simHours * 60)} min` : `${simHours.toFixed(1)} h`} of traffic</dd>
+        </dl>
+        <button className="primary wide" disabled={busy || !ok} onClick={submit}>{busy ? "Preparing the network…" : "Start training"}</button>
+        <button className="btn quiet small" onClick={onCancel}>Cancel</button>
+      </aside>
     </div>
   );
 }
@@ -306,34 +559,50 @@ function AgentDetail({ a, scenarios, networks, fail, onBack, onChanged, onVarian
   const del = async () => { if (!confirm(`Delete ${a.config.name} and its models? This cannot be undone.`)) return; try { await api.deleteAgent(a.id); onBack(); onChanged(); } catch (e) { fail(e); } };
   const c = a.config;
   const pct = st.episodes ? (100 * st.episodes_done) / st.episodes : 0;
+  const tts = log.map((r) => r.travel_time_s).filter((x): x is number => x != null);
+  const avg = (v: number[]) => (v.length ? v.reduce((x, y) => x + y, 0) / v.length : null);
+  const firstTT = avg(tts.slice(0, 5)), lastTT = tts.length > 5 ? avg(tts.slice(-5)) : null;
+  const evalPts = log.filter((r) => r.eval_travel_time_s != null).map((r) => [r.episode, r.eval_travel_time_s!] as [number, number]);
   return (
     <div className="agent-detail">
-      <button className="btn quiet" onClick={onBack}>All agents</button>
-      <div className="row spread">
-        <h2 className="detail-title">{c.name} <StateTag s={st.state} /></h2>
-        <div className="row nowrap">
+      <div className="detail-head">
+        <div>
+          <button className="btn quiet small" onClick={onBack}>← All agents</button>
+          <h2 className="detail-title">{c.name} <StateTag s={st.state} /></h2>
+          <p className="small muted">{ALG_NAME[c.algorithm]}, {st.agents ?? "?"} signals learning {c.sharing === "shared" ? "together" : "separately"}, on {(() => { const s = scenarios.find((x) => x.id === c.scenario_id); return s ? scenLabel(s, networks) : a.manifest.scenario_name; })()}.{c.note ? ` ${c.note}` : ""}</p>
+        </div>
+        <div className="page-actions">
           {st.state === "running" && <button className="btn secondary small" onClick={() => ctl("pause")}>Pause</button>}
-          {st.state === "paused" && <button className="btn secondary small" onClick={() => ctl("resume")}>Resume</button>}
+          {st.state === "paused" && <button className="primary small" onClick={() => ctl("resume")}>Resume</button>}
           {active && <button className="btn secondary small" onClick={() => ctl("stop")}>Stop</button>}
           {a.has_model && <button className="btn secondary small" onClick={onWatch}>Watch on map</button>}
-          {a.has_model && <button className="btn secondary small" onClick={onBench}>Benchmark</button>}
+          {a.has_model && <button className="primary small" onClick={onBench}>Benchmark</button>}
           <button className="btn secondary small" onClick={onVariant}>Create variant</button>
           {!active && <button className="btn danger small" onClick={del}>Delete</button>}
         </div>
       </div>
-      <p className="small muted">{ALG_NAME[c.algorithm]}, {c.sharing === "shared" ? "one network shared by" : "one network for each of"} {st.agents ?? "the"} signals,
-        trained on {(() => { const s = scenarios.find((x) => x.id === c.scenario_id); return s ? scenLabel(s, networks) : a.manifest.scenario_name; })()}. {c.note}</p>
       {st.error && <p className="error-box">{st.error}</p>}
-      <div className="progress" role="progressbar" aria-valuenow={st.episodes_done} aria-valuemax={st.episodes}><i style={{ width: `${pct}%` }} /></div>
-      <p className="small">{st.episodes_done} of {st.episodes} episodes{st.state === "running" && st.episode ? `; episode ${st.episode} running` : ""}
-        {st.best_episode ? `. Best so far: episode ${st.best_episode} (lowest travel time).` : "."}</p>
+      {st.note && <p className="banner-inline">{st.note}</p>}
+
+      <div className="stats">
+        <div className="stat"><span className="stat-num">{st.episodes_done}<small>of {st.episodes}</small></span><span className="stat-name">Episodes</span>
+          <span className="progress thin" role="progressbar" aria-valuenow={st.episodes_done} aria-valuemax={st.episodes}><i style={{ width: `${pct}%` }} /></span>
+          <span className="stat-note">{st.state === "evaluating" ? "Evaluating now" : st.state === "running" && st.episode != null ? `Episode ${st.episode + 1} running` : stateName[st.state]}</span></div>
+        <div className="stat"><span className="stat-num">{fmt(firstTT)}<small>s</small></span><span className="stat-name">Travel time, first 5 episodes</span></div>
+        <div className="stat"><span className="stat-num">{fmt(lastTT)}<small>s</small></span><span className="stat-name">Travel time, last 5 episodes</span>
+          <span className="stat-note">{firstTT && lastTT ? `${lastTT < firstTT ? "" : "+"}${(100 * (lastTT - firstTT) / firstTT).toFixed(1)}% while training` : ""}</span></div>
+        <div className="stat"><span className="stat-num">{st.best_eval_travel_time_s != null ? <>{fmt(st.best_eval_travel_time_s)}<small>s</small></> : st.best_episode ?? "–"}</span>
+          <span className="stat-name">{st.best_eval_travel_time_s != null ? "Best evaluation" : "Best episode"}</span>
+          <span className="stat-note">{st.best_episode ? `Episode ${st.best_episode}; saved as the best model` : "Not yet"}</span></div>
+      </div>
 
       <div className="chart-grid">
-        <div className="card"><h2>Reward per decision</h2>
-          <LineChart series={[{ name: "Episode", pts: log.map((r) => [r.episode, r.reward]) }, { name: "Average of last 5", pts: smooth(log.map((r) => [r.episode, r.reward])) }]} xLabel="Episode" yLabel="reward" /></div>
         <div className="card"><h2>Average travel time</h2>
           <LineChart series={[{ name: "Episode", pts: log.filter((r) => r.travel_time_s != null).map((r) => [r.episode, r.travel_time_s!]) },
-            { name: "Average of last 5", pts: smooth(log.filter((r) => r.travel_time_s != null).map((r) => [r.episode, r.travel_time_s!])) }]} xLabel="Episode" yLabel="s" /></div>
+            { name: "Average of last 5", pts: smooth(log.filter((r) => r.travel_time_s != null).map((r) => [r.episode, r.travel_time_s!])) },
+            ...(evalPts.length ? [{ name: "Evaluation", pts: evalPts }] : [])]} xLabel="Episode" yLabel="s" /></div>
+        <div className="card"><h2>Reward per decision</h2>
+          <LineChart series={[{ name: "Episode", pts: log.map((r) => [r.episode, r.reward]) }, { name: "Average of last 5", pts: smooth(log.map((r) => [r.episode, r.reward])) }]} xLabel="Episode" yLabel="reward" /></div>
         <div className="card"><h2>{c.algorithm === "ppo" ? "Policy entropy" : "Exploration"} and loss</h2>
           <LineChart series={[{ name: c.algorithm === "ppo" ? "Entropy" : "Exploration rate", pts: log.map((r) => [r.episode, (c.algorithm === "ppo" ? r.entropy : r.epsilon) ?? NaN]) },
             { name: "Loss", pts: log.filter((r) => r.loss != null).map((r) => [r.episode, r.loss!]), right: true }]} xLabel="Episode" yLabel="" /></div>
@@ -343,12 +612,12 @@ function AgentDetail({ a, scenarios, networks, fail, onBack, onChanged, onVarian
         <h2>Episode log</h2>
         {!log.length ? <p className="small muted">The first episode is still running.</p> : (
           <div className="table-scroll"><table className="library compact">
-            <thead><tr><th className="n-col">Episode</th><th className="n-col">Demand</th><th className="n-col">Seed</th><th className="n-col">Reward</th><th className="n-col">Travel time (s)</th>
+            <thead><tr><th className="n-col">Episode</th><th className="n-col">Demand</th><th className="n-col">Seed</th><th className="n-col">Reward</th><th className="n-col">Travel time (s)</th><th className="n-col">Evaluation (s)</th>
               <th className="n-col">Arrived</th><th className="n-col">Stopped</th><th className="n-col">Gridlock</th><th className="n-col">Loss</th><th className="n-col">Time (s)</th></tr></thead>
             <tbody>{[...log].reverse().map((r) => (
               <tr key={r.episode}><td className="n-col">{r.episode}{r.episode === st.best_episode && <span className="chip">best</span>}</td>
                 <td className="n-col">{Math.round(r.demand_scale * 100)}%</td><td className="n-col">{r.seed}</td><td className="n-col">{fmt(r.reward, 3)}</td>
-                <td className="n-col">{fmt(r.travel_time_s)}</td><td className="n-col">{r.arrived}</td><td className="n-col">{fmt(r.mean_stopped)}</td>
+                <td className="n-col">{fmt(r.travel_time_s)}</td><td className="n-col">{fmt(r.eval_travel_time_s)}</td><td className="n-col">{r.arrived}</td><td className="n-col">{fmt(r.mean_stopped)}</td>
                 <td className="n-col">{r.teleports}</td><td className="n-col">{fmt(r.loss, 4)}</td><td className="n-col">{fmt(r.wall_s, 0)}</td></tr>
             ))}</tbody>
           </table></div>
@@ -466,7 +735,9 @@ function BarChart({ rows, unit }: { rows: { label: string; mean: number | null; 
 
 /* ============================== benchmarks ============================== */
 
-function Benchmarks({ networks, scenarios, fail, preAgent, preExternal }: Props & { preAgent: string | null; preExternal: ExternalCfg | null }) {
+function Benchmarks({ networks, scenarios, fail, preAgent, preExternal, startNew, onStarted }: Props & {
+  preAgent: string | null; preExternal: ExternalCfg | null; startNew: boolean; onStarted: () => void;
+}) {
   const [list, setList] = useState<BenchInfo[] | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sel, setSel] = useState<string | null>(() => sessionStorage.getItem("junction.bench"));
@@ -476,6 +747,7 @@ function Benchmarks({ networks, scenarios, fail, preAgent, preExternal }: Props 
   useEffect(() => { sel ? sessionStorage.setItem("junction.bench", sel) : sessionStorage.removeItem("junction.bench"); }, [sel]);
   const busy = list?.some((b) => b.status.state === "running" || b.status.state === "queued");
   useEffect(() => { if (!busy) return; const t = setInterval(load, 3000); return () => clearInterval(t); }, [busy]);
+  const heads = useHeadlines(list);
 
   const start = (agentId?: string | null, ext?: ExternalCfg | null) => {
     const ag = agents.find((a) => a.id === agentId);
@@ -489,8 +761,9 @@ function Benchmarks({ networks, scenarios, fail, preAgent, preExternal }: Props 
     });
     setSel(null);
   };
-  useEffect(() => { if (preAgent && agents.length) start(preAgent); }, [preAgent, agents.length]);
-  useEffect(() => { if (preExternal) start(null, preExternal); }, [preExternal]);
+  useEffect(() => { if (preAgent && agents.length) { start(preAgent); onStarted(); } }, [preAgent, agents.length]);
+  useEffect(() => { if (preExternal) { start(null, preExternal); onStarted(); } }, [preExternal]);
+  useEffect(() => { if (startNew) { onStarted(); start(); } }, [startNew]);
 
   if (form) return <BenchForm f={form} set={setForm} scenarios={scenarios} networks={networks} agents={agents} fail={fail} onCancel={() => setForm(null)}
     onCreated={async (b) => { setForm(null); await load(); setSel(b.id); }} />;
@@ -498,21 +771,20 @@ function Benchmarks({ networks, scenarios, fail, preAgent, preExternal }: Props 
   if (cur) return <BenchDetail b={cur} networks={networks} fail={fail} onBack={() => setSel(null)} onChanged={load} />;
   return (
     <>
-      <div className="row spread page-tools">
-        <p className="small muted">Every controller runs on the same seeds, departures and demand, so differences come from the control alone.</p>
-        <button className="btn primary" onClick={() => start()} disabled={!scenarios.length}>New benchmark</button>
-      </div>
       {!list && <p className="status-line" role="status"><span className="spinner" aria-hidden="true" />Loading benchmarks…</p>}
-      {list && !list.length && <p className="small muted">No benchmarks yet.</p>}
+      {list && !list.length && <div className="card"><div className="empty">No benchmarks yet. Pick controllers and conditions; every controller then runs on identical traffic.<br />
+        <button className="primary small" onClick={() => start()} disabled={!scenarios.length}>New benchmark</button></div></div>}
       {list && list.length > 0 && (
         <table className="library">
-          <thead><tr><th>Name</th><th>Controllers</th><th>Conditions</th><th>Status</th><th>Created</th></tr></thead>
+          <thead><tr><th>Name</th><th>Result</th><th>Controllers</th><th>Conditions</th><th>Status</th><th>Created</th></tr></thead>
           <tbody>{list.map((b) => (
             <tr key={b.id} tabIndex={0} onClick={() => setSel(b.id)} onKeyDown={(e) => e.key === "Enter" && setSel(b.id)}>
               <td><b>{b.config.name}</b></td>
-              <td>{b.manifest.labels.join(", ")}</td>
-              <td>{1 + b.config.heldout_ids.length} scenario{b.config.heldout_ids.length ? "s" : ""} × {b.config.demand_levels.length} demand × {b.config.seeds} seeds</td>
-              <td><StateTag s={b.status.state} />{b.status.state === "running" && <span className="small"> {b.status.done}/{b.status.total}</span>}</td>
+              <td><Headline h={heads[b.id]} /></td>
+              <td className="small">{b.manifest.labels.join(", ")}</td>
+              <td className="small">{1 + b.config.heldout_ids.length} scenario{b.config.heldout_ids.length ? "s" : ""} × {b.config.demand_levels.length} demand × {b.config.seeds} seeds</td>
+              <td className="cell-progress"><StateTag s={b.status.state} />
+                {(b.status.state === "running" || b.status.state === "queued") && <span className="progress thin"><i style={{ width: `${(100 * b.status.done) / (b.status.total || 1)}%` }} /></span>}</td>
               <td>{when(b.status.created)}</td>
             </tr>))}
           </tbody>
@@ -618,7 +890,7 @@ function BenchForm({ f, set, scenarios, networks, agents, fail, onCancel, onCrea
         </div>
       </div>
       <div className="row">
-        <button className="btn primary" disabled={busy || f.controllers.length < 2 || !f.demand_levels.length} onClick={submit}>{busy ? "Starting…" : `Run ${runs} simulations`}</button>
+        <button className="primary" disabled={busy || f.controllers.length < 2 || !f.demand_levels.length} onClick={submit}>{busy ? "Starting…" : `Run ${runs} simulations`}</button>
         {f.controllers.length < 2 && <span className="small muted">Choose at least two controllers.</span>}
       </div>
     </div>
@@ -641,7 +913,7 @@ function BenchDetail({ b, networks, fail, onBack, onChanged }: { b: BenchInfo; n
   const sweep = useMemo(() => (stats && c ? stats.conditions.filter((x) => x.scenario_id === c.scenario_id).sort((p, q) => p.demand - q.demand) : []), [stats, c]);
   return (
     <div className="bench-detail">
-      <button className="btn quiet" onClick={onBack}>All benchmarks</button>
+      <button className="btn quiet small" onClick={onBack}>← All benchmarks</button>
       <div className="row spread">
         <h2 className="detail-title">{b.config.name} <StateTag s={st.state} /></h2>
         <div className="row nowrap">
@@ -667,7 +939,7 @@ function BenchDetail({ b, networks, fail, onBack, onChanged }: { b: BenchInfo; n
         <div className="card">
           <h2>Measures, mean and 95% confidence interval</h2>
           <div className="table-scroll"><table className="library compact bench-table">
-            <thead><tr><th>Controller</th>{keys.map((k) => <th key={k} className="n-col">{ms[k].label}{ms[k].unit && ` (${ms[k].unit})`}</th>)}<th className="n-col">Runs</th></tr></thead>
+            <thead><tr><th>Controller</th>{keys.map((k) => <th key={k} className="n-col">{ms[k].label}{ms[k].unit && <span className="th-unit">{ms[k].unit}</span>}</th>)}<th className="n-col">Runs</th></tr></thead>
             <tbody>{c.rows.map((r) => (
               <tr key={r.controller} className={r.controller === stats.reference ? "ref-row" : ""}>
                 <td><b>{r.label}</b>{r.controller === stats.reference && <span className="chip">reference</span>}</td>
@@ -736,6 +1008,7 @@ function Connect({ networks, scenarios, fail, onBench }: Props & { onBench: (c: 
   });
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [ext, setExt] = useState<ExternalCfg>(() => savedControllers()[0] ?? { url: "http://localhost:9000/", name: "My controller" });
   const [hosts, setHosts] = useState<string[]>([]);
   useEffect(() => { api.controllerProtocol().then((p) => setHosts(p.allowed_hosts)).catch(() => {}); }, []);
@@ -745,78 +1018,92 @@ function Connect({ networks, scenarios, fail, onBench }: Props & { onBench: (c: 
     setBusy(true); setDone(null);
     try { setDone(await api.downloadRlEnv(sid, cfg)); } catch (e) { fail(e); } finally { setBusy(false); }
   };
+  const cmd = "python external_controller.py --port 9000";
   const feats = cfg.observation.features;
   return (
-    <div className="form-cols connect">
+    <div className="grid-2 connect">
+      <div className="card">
+        <h2>Use your own controller</h2>
+        <p className="card-lead">Your program decides which light turns green next. Junction runs the traffic, keeps every change safe and compares your controller with the standard ones.</p>
+        <ol className="step-tiles">
+          <li>
+            <span className="step-n" aria-hidden="true">1</span>
+            <b>Get the example</b>
+            <span className="small muted">A small Python program; nothing to install.</span>
+            <a className="btn secondary small" href={api.controllerExampleUrl()}>Download example</a>
+          </li>
+          <li>
+            <span className="step-n" aria-hidden="true">2</span>
+            <b>Start it</b>
+            <span className="small muted">Then swap in your own logic where it chooses the green.</span>
+            <span className="cmd"><code>{cmd}</code>
+              <button className="btn quiet small" onClick={() => { navigator.clipboard?.writeText(cmd).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {}); }}>{copied ? "Copied" : "Copy"}</button></span>
+          </li>
+          <li>
+            <span className="step-n" aria-hidden="true">3</span>
+            <b>Connect and test</b>
+            <ExternalPicker value={ext} onChange={setExt} compact />
+          </li>
+        </ol>
+        <div className="row">
+          <button className="primary small" disabled={!ext.url} onClick={() => { rememberController(ext); onBench(ext); }}>Benchmark it</button>
+          <span className="small muted">It is also available as “External” in the live view.</span>
+        </div>
+        <details className="dev">
+          <summary>For developers: what Junction sends</summary>
+          <p className="small">Every few simulated seconds, a POST with each signal that is free to change and, for each of its green options,
+            the vehicles queued, approaching and queued beyond. Reply with the option to show. Allowed hosts: {hosts.join(", ") || "localhost"} (setting JUNCTION_CONTROLLER_HOSTS).</p>
+          <pre className="config">{`{"type": "decide", "time_s": 125,
+ "signals": [{"id": "B1", "current": 0, "green_for_s": 22,
+   "options": [{"queue": 4, "approaching": 2, "queue_beyond": 0},
+               {"queue": 9, "approaching": 1, "queue_beyond": 1}]}]}
+
+reply: {"actions": {"B1": 1}}`}</pre>
+        </details>
+      </div>
+
       <div className="card">
         <h2>Train with your own code</h2>
-        <p className="small">Download a scenario as a multi-agent environment for your own RL code (PettingZoo parallel API; works with
-          Stable-Baselines3, RLlib, CleanRL or plain PyTorch). It uses Junction's own observation, safety rules and reward, so agents
-          trained outside face the same problem as agents trained here. Needs only SUMO and NumPy.</p>
+        <p className="card-lead">Download a scenario as a ready-made RL environment for Stable-Baselines3, RLlib or PyTorch. It uses Junction's own measurements, safety rules and reward.</p>
         <label className="field block"><span className="label">Scenario</span>
           <select value={sid} onChange={(e) => setSid(e.target.value)}>
             {scenarios.map((s) => <option key={s.id} value={s.id}>{scenLabel(s, networks)}</option>)}
           </select></label>
         <fieldset className="field block"><legend className="label">Reward</legend>
-          {REWARDS.map((r) => (
-            <label key={r.id} className="field-check row nowrap">
-              <input type="radio" name="env-reward" checked={cfg.reward === r.id} onChange={() => up("reward", r.id)} />
-              <span><b>{r.name}.</b> {r.text}</span>
-            </label>))}
+          <div className="choice-cards" role="radiogroup">
+            {REWARDS.map((r) => (
+              <button key={r.id} role="radio" aria-checked={cfg.reward === r.id} className="choice-card" onClick={() => up("reward", r.id)}>
+                <b>{r.name}</b><span>{r.short}</span>
+              </button>))}
+          </div>
         </fieldset>
         <details className="advanced">
-          <summary>Observation, actions and episodes</summary>
-          <Num label="Observation distance" hint="m" v={cfg.observation.reach_m} min={10} max={300} step={10} set={(n) => up("observation", { reach_m: n })} />
-          {FEATURES.map((f) => (
-            <label key={f.id} className="field-check row nowrap">
-              <input type="checkbox" checked={feats.includes(f.id)}
-                onChange={(e) => up("observation", { features: e.target.checked ? [...feats, f.id] : feats.filter((x) => x !== f.id) })} />
-              <span>{f.name}</span>
-            </label>))}
+          <summary>Measurements, timing and episodes</summary>
+          <Num label="Looks this far back" hint="m" v={cfg.observation.reach_m} min={10} max={300} step={10} set={(n) => up("observation", { reach_m: n })} />
+          <div className="chip-checks" role="group" aria-label="Measurements">
+            {FEATURES.map((f) => (
+              <label key={f.id} className={`chip-check ${feats.includes(f.id) ? "on" : ""}`}>
+                <input type="checkbox" checked={feats.includes(f.id)}
+                  onChange={(e) => up("observation", { features: e.target.checked ? [...feats, f.id] : feats.filter((x) => x !== f.id) })} />
+                {f.short}
+              </label>))}
+          </div>
           <Num label="Seconds per step" v={cfg.action.delta_t} min={2} max={30} set={(n) => up("action", { delta_t: n })} />
           <Num label="Minimum green" hint="s" v={cfg.action.min_green} min={5} max={60} set={(n) => up("action", { min_green: n })} />
           <Num label="Amber" hint="s" v={cfg.action.amber} min={2} max={6} set={(n) => up("action", { amber: n })} />
           <Num label="All-red" hint="s" v={cfg.action.all_red} min={0} max={5} set={(n) => up("action", { all_red: n })} />
           <Num label="Episode length" hint="min" v={cfg.episode_min} min={5} max={60} set={(n) => up("episode_min", n)} />
-          <fieldset className="field"><legend className="label">Demand levels to sample</legend>
+          <fieldset className="field block"><legend className="label">Demand levels</legend>
             <DemandChips v={cfg.demand_scales} set={(v) => up("demand_scales", v)} /></fieldset>
         </details>
-        <div className="row">
-          <button className="primary small" onClick={download} disabled={busy || !sid || !feats.length || !cfg.demand_scales.length}>
-            {busy ? "Building the environment…" : "Download environment"}</button>
-        </div>
-        {done && <p className="small good-text" role="status">Downloaded {done}. Unzip it and run <code>python example_random.py</code> to check it works; the README explains the rest.</p>}
-      </div>
-
-      <div className="card">
-        <h2>Benchmark your own controller</h2>
-        <p className="small">Run your controller as a small web service. Every few simulated seconds Junction sends it, for each signal
-          that is free to change, the queue, approaching vehicles and queue beyond each green option; it answers with the option to show
-          next. Junction adds amber and all-red and enforces the minimum green, so any controller is compared safely and fairly.</p>
-        <ol className="small steps-list">
-          <li>Start from the <a href={api.controllerExampleUrl()}>example controller</a> (Python, no packages needed): <code>python external_controller.py --port 9000</code></li>
-          <li>Replace its <code>choose()</code> with your algorithm or trained model.</li>
-          <li>Enter its address below, check the connection, then benchmark it or watch it in the live view.</li>
-        </ol>
-        <ExternalPicker value={ext} onChange={setExt} />
-        <div className="row">
-          <button className="primary small" disabled={!ext.url} onClick={() => { rememberController(ext); onBench(ext); }}>Benchmark it</button>
-        </div>
-        <p className="small muted">For safety this server only calls controllers on {hosts.length ? hosts.join(", ") : "allowed hosts"}.
-          The operator can allow more with the JUNCTION_CONTROLLER_HOSTS setting.</p>
-        <details><summary>Message format</summary>
-          <pre className="config">{`POST your address, JSON:
-{"protocol": "junction-controller/1", "type": "decide", "time_s": 125,
- "signals": [{"id": "B1", "current": 0, "green_for_s": 22,
-   "options": [{"queue": 4, "approaching": 2, "queue_beyond": 0},
-               {"queue": 9, "approaching": 1, "queue_beyond": 1}]}]}
-
-Answer:
-{"actions": {"B1": 1}}
-
-Also sent: "start" (signals, their green options and lanes, settings)
-and "end" (call statistics). Any 2xx answer is fine for those.`}</pre>
-        </details>
+        <ul className="inside small">
+          <li>Network and traffic for the scenario</li>
+          <li>Multi-agent environment (PettingZoo parallel API)</li>
+          <li>Random-policy example and README</li>
+        </ul>
+        <button className="primary small" onClick={download} disabled={busy || !sid || !feats.length || !cfg.demand_scales.length}>
+          {busy ? "Building…" : "Download environment"}</button>
+        {done && <p className="small good-text" role="status">Downloaded {done}. Run <code>python example_random.py</code> inside it to check it works.</p>}
       </div>
     </div>
   );

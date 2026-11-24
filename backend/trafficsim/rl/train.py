@@ -9,6 +9,7 @@ Each agent lives in WORKSPACE/research/agents/<id>/:
 """
 import hashlib
 import json
+import os
 import multiprocessing as mp
 import shutil
 import threading
@@ -44,10 +45,17 @@ class TrainCfg(BaseModel):
     demand_scales: List[float] = [0.8, 1.0, 1.2]   # an episode's demand is drawn from these (robust training)
     seed: int = Field(1, ge=1, le=1_000_000)
     checkpoint_every: int = Field(5, ge=1, le=500)
+    # evaluation: every N episodes, run the greedy policy (no exploration, no learning) on fixed held-out traffic;
+    # gives a clean convergence curve and picks the best model on the same traffic every time. 0 = off
+    eval_every: int = Field(5, ge=0, le=100)
+    eval_episodes: int = Field(1, ge=1, le=5)
+    eval_demand: float = Field(1.0, ge=0.3, le=2.0)
+    early_stop_patience: int = Field(0, ge=0, le=50)   # stop after this many evaluations without improvement; 0 = off
 
 
 class Hyper(BaseModel):
     lr: float = Field(1e-3, gt=0, le=0.1)
+    lr_schedule: Literal["constant", "linear"] = "constant"   # linear: falls to 10% of lr by the last episode
     gamma: float = Field(0.95, ge=0, le=0.999)
     hidden: List[int] = [64, 64]
     # DQN / Double DQN
@@ -167,6 +175,44 @@ def _sumo_args(job: dict, routes: str, scale: float, seed: int, stop: float) -> 
             "--ignore-junction-blocker", str(JUNCTION_BLOCKER_S), "--no-step-log", "true", "--no-warnings", "true"]
 
 
+EVAL_SEED = 900_000
+
+
+def _set_lr(learners, lr: float):
+    for lrn in learners.unique.values():
+        for name in ("opt", "opt_pi", "opt_v"):
+            if hasattr(lrn, name):
+                getattr(lrn, name).lr = lr
+
+
+def _evaluate(ls, job: dict, cfg: dict, learners, reach_cache: dict) -> dict:
+    """Greedy policy, no learning, on the same held-out traffic every time (seeds EVAL_SEED + i)."""
+    from .env import SignalEnv
+    tr = cfg["training"]
+    ep_end = job["begin"] + tr["episode_min"] * 60
+    out = []
+    for i in range(int(tr.get("eval_episodes") or 1)):
+        ls.start(_sumo_args(job, job["routes"], float(tr.get("eval_demand") or 1.0), EVAL_SEED + i, ep_end + 1))
+        try:
+            env = SignalEnv(ls, job["net_file"], cfg, reach_cache)
+            out.append(run_episode(ls, env, learners, cfg, False, 0.0, None, ep_end))
+        finally:
+            ls.close()
+    tts = [o["travel_time_s"] for o in out if o["travel_time_s"] is not None]
+    return dict(travel_time_s=round(float(np.mean(tts)), 2) if tts else None,
+                reward=round(float(np.mean([o["reward"] for o in out])), 4), arrived=int(sum(o["arrived"] for o in out)))
+
+
+def _alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _write_status(d: Path, **kw):
     f = d / "status.json"
     s = json.loads(f.read_text()) if f.exists() else {}
@@ -193,6 +239,9 @@ def train_worker(job: dict, conn):
     total_decisions_est = None
     seen_decisions = 0
     start_ep = job.get("start_episode", 0)
+    eval_best, since_best, stop_reason = None, 0, None
+    _write_status(d, pid=os.getpid())
+    eval_every = int(tr.get("eval_every") or 0)
     try:
         for ep in range(start_ep, tr["episodes"]):
             while True:                                  # commands between episodes
@@ -234,6 +283,8 @@ def train_worker(job: dict, conn):
                 else:
                     frac = 0.0
                 eps = hp["eps_start"] + (hp["eps_end"] - hp["eps_start"]) * frac
+                if hp.get("lr_schedule") == "linear":
+                    _set_lr(learners, hp["lr"] * (1 - 0.9 * ep / max(1, tr["episodes"] - 1)))
                 m = run_episode(ls, env, learners, cfg, True, eps, rng, ep_end)
             finally:
                 ls.close()
@@ -244,6 +295,13 @@ def train_worker(job: dict, conn):
             row = dict(episode=ep + 1, demand_scale=scale, seed=seed, wall_s=round(time.time() - t0, 1),
                        epsilon=round(eps, 4) if cfg["algorithm"] != "ppo" else None,
                        entropy=getattr(first, "last_entropy", None), **m)
+            if hp.get("lr_schedule") == "linear":
+                row["lr"] = round(hp["lr"] * (1 - 0.9 * ep / max(1, tr["episodes"] - 1)), 8)
+            evaluated = eval_every and ((ep + 1) % eval_every == 0 or ep + 1 == tr["episodes"])
+            if evaluated:
+                _write_status(d, state="evaluating", episode=ep)
+                ev = _evaluate(ls, job, cfg, learners, reach_cache)
+                row.update(eval_travel_time_s=ev["travel_time_s"], eval_reward=ev["reward"], eval_arrived=ev["arrived"])
             with open(d / "log.jsonl", "a") as f:
                 f.write(json.dumps(row) + "\n")
             arrays = learners.state()
@@ -251,14 +309,25 @@ def train_worker(job: dict, conn):
             if ck:
                 (d / "ckpt").mkdir(exist_ok=True)
                 save(d / "ckpt" / f"ep_{ep + 1:04d}.npz", arrays, dict(meta, episode=ep + 1))
-            if m["reward_sum"] > best:
+            if eval_every:                                # best = lowest travel time on the fixed evaluation traffic
+                if evaluated and row["eval_travel_time_s"] is not None and (eval_best is None or row["eval_travel_time_s"] < eval_best):
+                    eval_best, since_best = row["eval_travel_time_s"], 0
+                    save(d / "best.npz", arrays, dict(meta, episode=ep + 1, eval_travel_time_s=eval_best))
+                    _write_status(d, best_episode=ep + 1, best_eval_travel_time_s=round(eval_best, 2))
+                elif evaluated:
+                    since_best += 1
+            elif m["reward_sum"] > best:
                 best = m["reward_sum"]
                 save(d / "best.npz", arrays, dict(meta, episode=ep + 1))
                 _write_status(d, best_episode=ep + 1)
             save(d / "final.npz", arrays, dict(meta, episode=ep + 1))
             _write_status(d, episodes_done=ep + 1)
             conn.send(dict(kind="episode", row=row))
-        _write_status(d, state="stopped" if stop else "done", finished=time.time())
+            patience = int(tr.get("early_stop_patience") or 0)
+            if eval_every and patience and since_best >= patience:
+                stop_reason = f"Stopped early: no improvement in {patience} evaluations."
+                break
+        _write_status(d, state="stopped" if stop else "done", finished=time.time(), **({"note": stop_reason} if stop_reason else {}))
         conn.send(dict(kind="end", state="stopped" if stop else "done"))
     except Exception as e:  # noqa: BLE001
         import traceback
@@ -281,7 +350,7 @@ class TrainingManager:
             st = d / "status.json"
             if st.exists():
                 s = json.loads(st.read_text())
-                if s.get("state") in ("running", "paused", "queued"):
+                if s.get("state") in ("running", "paused", "queued", "evaluating") and not _alive(s.get("pid")):
                     _write_status(d, state="interrupted")
 
     def create(self, cfg: AgentCfg, prepare) -> dict:

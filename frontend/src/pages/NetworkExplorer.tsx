@@ -1,3 +1,4 @@
+import NetworkPick from "../NetworkPick";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
@@ -114,7 +115,8 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
             <Legend mode="layout" />
           </>
         ) : (
-          <div className="empty-stage"><p>{loading ? "Loading the network…" : "Pick a network to see its map."}</p></div>
+          loading ? <div className="empty-stage"><p>Loading the network…</p></div>
+            : <div className="empty-stage"><NetworkPick networks={networks} onPick={onSelect} title="Choose a network to explore" /></div>
         )}
       </div>
 
@@ -130,7 +132,6 @@ export default function NetworkExplorer({ networks, selected, onSelect, onChange
                 <h2>Network Explorer</h2>
                 <button className="btn secondary small" onClick={() => setAdding("area")}>Add network</button>
               </div>
-              <p className="lead">Your road networks. Add one from OpenStreetMap or a SUMO file, then build scenarios on it.</p>
               <label className="field block">
                 <span className="label">Network</span>
                 <select value={selected ?? ""} onChange={(e) => onSelect(e.target.value || null)} aria-label="Network">

@@ -4,6 +4,8 @@ import { JobRow } from "../RunMonitor";
 import { CONTROLLERS, when, listNav } from "../shared";
 import type { Health, Network, Scenario, Simulation as Sim } from "../types";
 import LiveSim from "./LiveSim";
+import PageHead from "../PageHead";
+import NetworkPick from "../NetworkPick";
 
 const REPEATS = [5, 10, 20];
 
@@ -28,7 +30,7 @@ export default function SimulationPage(props: Props) {
   const tabs = (
     <div className="seg wide sim-tabs" role="tablist" aria-label="Simulation mode">
       <button role="tab" aria-selected={tab === "live"} onClick={() => setTab("live")}>Live view</button>
-      <button role="tab" aria-selected={tab === "compare"} onClick={() => setTab("compare")}>Compare scenarios{running ? " ·" : ""}</button>
+      <button role="tab" aria-selected={tab === "compare"} onClick={() => setTab("compare")}>Compare scenarios{running ? " (running)" : ""}</button>
     </div>
   );
   return tab === "live"
@@ -81,14 +83,12 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
   return (
     <main className="work page-only">
       <section className="page">
-        <div className="page-head">
-          <h1>Traffic Simulation</h1>
-          {tabs}
-          <p className="lead">Compare scenarios against a reference with the same traffic, several runs each, for results you can trust. Runs go on in the background; you can keep working.</p>
-        </div>
+        <PageHead title="Traffic Simulation" lead="Compare scenarios on identical traffic over several runs. Runs continue in the background."
+          actions={<div className="head-tabs">{tabs}</div>} />
 
+        <div className="grid-2">
         <div className="card">
-          <h2>New simulation</h2>
+          <h2>New comparison</h2>
           <label className="field block">
             <span className="label">Network</span>
             <select value={nid} onChange={(e) => { setNid(e.target.value); setAlts([]); setRef(""); }}>
@@ -97,6 +97,7 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
             </select>
           </label>
 
+          {!nid && <NetworkPick networks={networks} title="" inline onPick={(id) => { setNid(id); setAlts([]); setRef(""); }} />}
           {nid && (
             <>
               <label className="field block">
@@ -134,7 +135,7 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
                 <div className="seg" role="radiogroup" aria-label="Number of runs">
                   {REPEATS.map((r) => <button key={r} role="radio" aria-checked={repeats === r} onClick={() => setRepeats(r)}>{r}</button>)}
                 </div>
-                <p className="small muted">Traffic is random, so each scenario runs several times with the same seeds. More runs: more reliable, but slower.</p>
+                <p className="small muted">More runs give a more reliable answer but take longer.</p>
               </fieldset>
               <label className="check field-check">
                 <input type="checkbox" checked={jitter > 0} onChange={(e) => setJitter(e.target.checked ? 300 : 0)} />
@@ -163,8 +164,11 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
           )}
         </div>
 
-        <h2 className="h2-inline">Running now</h2>
-        {running.length === 0 && <p className="small muted">Nothing is running.</p>}
+        <div className="stack">
+        <div className="card">
+          <h2>Running now</h2>
+          {running.length === 0 && <p className="empty">Nothing is running. New comparisons appear here with their progress.</p>}
+        </div>
         {running.map((s) => (
           <div key={s.id} className="card">
             <div className="row spread"><h3 className="h3-flat">{s.name}</h3><span className="small muted">{netName(s.network)}, started {when(s.created)}</span></div>
@@ -194,9 +198,9 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
         )}
 
         {recent.length > 0 && (
-          <>
-            <h2 className="h2-inline">Recently finished</h2>
-            <ul className="recent card" onKeyDown={listNav}>
+          <div className="card">
+            <h2>Recently finished</h2>
+            <ul className="recent" onKeyDown={listNav}>
               {recent.map((s) => (
                 <li key={s.id}>
                   <span><b>{s.name}</b> <span className="small muted">{netName(s.network)}, {when(s.created)}</span></span>
@@ -205,8 +209,10 @@ function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onC
                 </li>
               ))}
             </ul>
-          </>
+          </div>
         )}
+        </div>
+        </div>
       </section>
     </main>
   );
