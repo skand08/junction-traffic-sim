@@ -48,8 +48,45 @@ class RetimeSignal(BaseModel):
     durations: List[float]
 
 
-Edit = Annotated[Union[SetLanes, SetSpeed, CloseRoad, BanTurn, RetimeSignal], Field(discriminator="type")]
-NETWORK_EDITS = ("set_lanes", "set_speed", "close_road", "ban_turn")
+class AddSignal(BaseModel):
+    """Put a traffic signal at a junction that has none (SUMO generates a default plan)."""
+    type: Literal["add_signal"] = "add_signal"
+    node: str
+
+
+class RemoveSignal(BaseModel):
+    """Take a junction's signal out; it becomes a priority junction (main road has right of way)."""
+    type: Literal["remove_signal"] = "remove_signal"
+    node: str
+
+
+class SetLaneWidth(BaseModel):
+    type: Literal["set_lane_width"] = "set_lane_width"
+    edge: str
+    width_m: float = Field(ge=2.5, le=4.5)
+
+
+# Road classes as planners use them: each sets the speed limit and right of way at unsignalled junctions
+# (higher priority = has right of way). Speeds are typical Indian/European urban limits.
+ROAD_TYPES = {
+    "local": dict(label="Local street", speed_kmh=30, priority=3),
+    "collector": dict(label="Collector road", speed_kmh=40, priority=6),
+    "arterial": dict(label="Arterial road", speed_kmh=50, priority=9),
+    "major_arterial": dict(label="Major arterial", speed_kmh=60, priority=11),
+    "expressway": dict(label="Expressway", speed_kmh=80, priority=13),
+}
+
+
+class SetRoadType(BaseModel):
+    type: Literal["set_road_type"] = "set_road_type"
+    edge: str
+    road_type: Literal["local", "collector", "arterial", "major_arterial", "expressway"]
+
+
+Edit = Annotated[Union[SetLanes, SetSpeed, CloseRoad, BanTurn, RetimeSignal, AddSignal, RemoveSignal,
+                       SetLaneWidth, SetRoadType], Field(discriminator="type")]
+NETWORK_EDITS = ("set_lanes", "set_speed", "close_road", "ban_turn", "add_signal", "remove_signal",
+                 "set_lane_width", "set_road_type")
 
 
 class Scenario(BaseModel):

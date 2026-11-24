@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 import type { Selection } from "./MapView";
 import { listNav } from "./shared";
 
-export type Item = { kind: "edge" | "signal"; id: string; label: string; sub: string; changed?: boolean };
+export type Item = { kind: "edge" | "signal" | "junction"; id: string; label: string; sub: string; changed?: boolean };
 
 type Props = {
   items: Item[];
@@ -23,13 +23,15 @@ function matches(it: Item, q: string) {
 export default function FindList({ items, onPick, onHover, variant, selectedId, placeholder }: Props) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [kind, setKind] = useState<"all" | "edge" | "signal">("all");
+  const [kind, setKind] = useState<"all" | "edge" | "signal" | "junction">("all");
   const id = useId();
+  // "All" leaves out plain junctions (there can be hundreds); they have their own filter
+  const shown = (it: Item) => (kind === "all" ? it.kind !== "junction" : it.kind === kind);
   const found = useMemo(() => {
-    const f = items.filter((it) => (kind === "all" || it.kind === kind) && (!q || matches(it, q)));
+    const f = items.filter((it) => shown(it) && (!q || matches(it, q)));
     return f.slice(0, variant === "dropdown" ? 12 : 200);
   }, [items, q, kind, variant]);
-  const total = items.filter((it) => (kind === "all" || it.kind === kind) && (!q || matches(it, q))).length;
+  const total = items.filter((it) => shown(it) && (!q || matches(it, q))).length;
 
   const pick = (it: Item) => {
     onPick({ kind: it.kind, id: it.id });
@@ -55,7 +57,7 @@ export default function FindList({ items, onPick, onHover, variant, selectedId, 
           </button>
         </li>
       ))}
-      {found.length === 0 && <li className="find-empty">No road or signal matches “{q}”.</li>}
+      {found.length === 0 && <li className="find-empty">{q ? `Nothing matches “${q}”.` : "Nothing to show."}</li>}
       {total > found.length && <li className="find-empty">Showing {found.length} of {total}. Type more to narrow down.</li>}
     </ul>
   );
@@ -78,8 +80,8 @@ export default function FindList({ items, onPick, onHover, variant, selectedId, 
         <input type="search" value={q} placeholder={placeholder ?? "Filter by name or id"} aria-label="Filter roads and signals"
           onChange={(e) => setQ(e.target.value)} />
         <div className="seg" role="group" aria-label="Show">
-          {(["all", "edge", "signal"] as const).map((k) => (
-            <button key={k} aria-pressed={kind === k} onClick={() => setKind(k)}>{k === "all" ? "All" : k === "edge" ? "Roads" : "Signals"}</button>
+          {(["all", "edge", "signal", "junction"] as const).filter((k) => k !== "junction" || items.some((it) => it.kind === "junction")).map((k) => (
+            <button key={k} aria-pressed={kind === k} onClick={() => setKind(k)}>{k === "all" ? "All" : k === "edge" ? "Roads" : k === "signal" ? "Signals" : "Junctions"}</button>
           ))}
         </div>
       </div>

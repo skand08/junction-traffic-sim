@@ -3,6 +3,8 @@
 Network edits are applied as netconvert plain-XML patches on the base network:
   set_lanes / set_speed / close_road -> edge patch (numLanes / speed / disallow="all")
   ban_turn                           -> connection patch (<delete from to>)
+  set_lane_width / set_road_type     -> edge patch (width / speed + priority)
+  add_signal / remove_signal         -> node patch (type="traffic_light" / "priority")
 Built networks are cached by a hash of (base network, network edits).
 Signal edits and the controller choice only produce an additional file (no rebuild).
 """
@@ -16,7 +18,7 @@ from typing import List
 from xml.sax.saxutils import quoteattr
 
 from . import catalog, config
-from .scenario import Scenario
+from .scenario import NETWORK_EDITS, ROAD_TYPES, Scenario
 import sumolib
 
 BUILD_DIR = config.WORKSPACE_DIR / "builds"
@@ -44,6 +46,7 @@ def _green(state: str) -> bool:
 
 
 def _validate_network_edits(s: Scenario, net) -> None:
+    signal_now: dict = {}
     for e in s.edits:
         if e.type in ("set_lanes", "set_speed", "close_road"):
             if not net.hasEdge(e.edge):
@@ -53,6 +56,24 @@ def _validate_network_edits(s: Scenario, net) -> None:
                 raise EditError(f"Turn {e.from_edge} → {e.to_edge}: road not found.")
             if net.getEdge(e.to_edge) not in net.getEdge(e.from_edge).getOutgoing():
                 raise EditError(f"There is no turn from '{e.from_edge}' to '{e.to_edge}' to ban.")
+        if e.type in ("set_lane_width", "set_road_type") and not net.hasEdge(e.edge):
+            raise EditError(f"Road '{e.edge}' does not exist in this network.")
+        if e.type in ("add_signal", "remove_signal"):
+            if not net.hasNode(e.node):
+                raise EditError(f"Junction '{e.node}' does not exist in this network.")
+            node = net.getNode(e.node)
+            # follow earlier edits in this scenario: a removed signal can be put back, and the reverse
+            is_tl = signal_now.get(e.node, node.getType().startswith("traffic_light"))
+            if e.type == "remove_signal" and not is_tl:
+                raise EditError(f"Junction '{e.node}' has no signal to remove.")
+            if e.type == "add_signal":
+                if is_tl:
+                    raise EditError(f"Junction '{e.node}' already has a signal.")
+                car_in = [x for x in node.getIncoming() if x.allows("passenger")]
+                if len(car_in) < 2:
+                    raise EditError("A signal needs at least two roads coming into the junction; "
+                                    "this one has " + str(len(car_in)) + ".")
+            signal_now[e.node] = e.type == "add_signal"
     closed = [e.edge for e in s.edits if e.type == "close_road"]
     for e in s.edits:
         if e.type in ("set_lanes", "set_speed") and e.edge in closed:
@@ -60,7 +81,7 @@ def _validate_network_edits(s: Scenario, net) -> None:
 
 
 def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
-    net_edits = [e for e in s.edits if e.type in ("set_lanes", "set_speed", "close_road", "ban_turn")]
+    net_edits = [e for e in s.edits if e.type in NETWORK_EDITS]
     base_net = base_dir / "net.net.xml"
     if not net_edits:
         return base_net, []
@@ -89,7 +110,22 @@ def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
             edge_attrs.setdefault(e.edge, {})["speed"] = f"{e.speed_kmh / 3.6:.2f}"
         elif e.type == "close_road":
             edge_attrs.setdefault(e.edge, {})["disallow"] = "all"
+        elif e.type == "set_lane_width":
+            edge_attrs.setdefault(e.edge, {})["width"] = f"{e.width_m:.2f}"
+        elif e.type == "set_road_type":
+            rt = ROAD_TYPES[e.road_type]
+            a = edge_attrs.setdefault(e.edge, {})
+            a["speed"] = f"{rt['speed_kmh'] / 3.6:.2f}"
+            a["priority"] = str(rt["priority"])
+    node_types = {e.node: ("traffic_light" if e.type == "add_signal" else "priority")
+                  for e in net_edits if e.type in ("add_signal", "remove_signal")}   # last edit per junction wins
     cmd = [config.NETCONVERT, "-s", str(base_net), "-o", str(out_net), "--no-warnings"]
+    if node_types:
+        nf = out_dir / "patch.nod.xml"
+        nf.write_text("<nodes>\n" + "".join(
+            f'  <node id={quoteattr(n)} type="{t}"' + (' tlType="static"' if t == "traffic_light" else "") + "/>\n"
+            for n, t in node_types.items()) + "</nodes>\n")
+        cmd += ["-n", str(nf)]
     if edge_attrs:
         ef = out_dir / "patch.edg.xml"
         parts = ["<edges>\n"]
@@ -110,22 +146,29 @@ def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
             f"  <delete from={quoteattr(b.from_edge)} to={quoteattr(b.to_edge)}/>\n" for b in bans)
             + "</connections>\n")
         cmd += ["-x", str(cf)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, env=config.tool_env())
     if r.returncode != 0 or not out_net.exists():
         raise EditError("The network could not be rebuilt with these changes: " + r.stderr.strip()[-400:])
 
     warnings = []
     a = sumolib.net.readNet(str(base_net), withPrograms=True)
     b = sumolib.net.readNet(str(out_net), withPrograms=True)
+    removed = {e.node for e in net_edits if e.type == "remove_signal"}
     for t in a.getTrafficLights():
         if t.getID() not in b._id2tls:
-            warnings.append(f"Signal {t.getID()} was removed by these changes.")
+            if t.getID() not in removed:
+                warnings.append(f"Signal {t.getID()} was removed by these changes.")
             continue
         pa = [p.state for p in next(iter(t.getPrograms().values())).getPhases()]
         pb = [p.state for p in next(iter(b.getTLS(t.getID()).getPrograms().values())).getPhases()]
         if pa != pb:
             warnings.append(f"Signal {t.getID()}: lanes or turns changed, so its signal plan was "
                             f"regenerated (default timings, {len(pb)} phases).")
+    for nid in node_types:
+        if node_types[nid] == "traffic_light" and nid in b._id2tls:
+            n = len(next(iter(b.getTLS(nid).getPrograms().values())).getPhases())
+            warnings.append(f"New signal at junction {nid}: SUMO generated a default plan ({n} phases). "
+                            "You can retime it.")
     warn_f.write_text(json.dumps(warnings))
     return out_net, warnings
 

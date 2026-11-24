@@ -38,14 +38,7 @@ class ImportError_(Exception):
 
 
 def _env():
-    env = dict(os.environ)
-    try:                                      # netconvert needs PROJ's database for map projections
-        import pyproj
-        env.setdefault("PROJ_DATA", pyproj.datadir.get_data_dir())
-        env.setdefault("PROJ_LIB", pyproj.datadir.get_data_dir())
-    except Exception:  # noqa: BLE001
-        pass
-    return env
+    return config.tool_env()
 
 
 def _run(cmd, cwd=None, what="conversion"):

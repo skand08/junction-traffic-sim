@@ -5,8 +5,8 @@ import EditPanel from "../EditPanel";
 import FindList from "../FindList";
 import { CONTROLLERS, Legend, when, listNav } from "../shared";
 import { explainWarning, relatedEdits } from "../warnings";
-import { itemsFor, signalLabel } from "./NetworkExplorer";
-import type { Controller, Edit, EdgeProps, Geometry, Network, Scenario, SignalProgram, SignalProps } from "../types";
+import { itemsFor, junctionLabel, signalLabel } from "./NetworkExplorer";
+import { ROAD_TYPES, type Controller, type Edit, type EdgeProps, type Geometry, type JunctionProps, type Network, type Scenario, type SignalProgram, type SignalProps } from "../types";
 
 type Props = {
   networks: Network[];
@@ -126,6 +126,12 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
   const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState<Selection>(null);
+  // adding or removing a signal turns a junction into a signal (or back): keep the same place selected
+  useEffect(() => {
+    if (!geo || !sel || sel.kind === "edge") return;
+    const now = geo.features.find((f) => f.properties.kind !== "edge" && f.properties.id === sel.id)?.properties.kind;
+    if (now && now !== sel.kind) setSel({ kind: now as "signal" | "junction", id: sel.id });
+  }, [geo]);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ bbox: [number, number, number, number]; key: number; maxZoom?: number } | null>(null);
   const [demandDraft, setDemandDraft] = useState<number | null>(null);
@@ -162,7 +168,12 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
   const items = useMemo(() => itemsFor(geo), [geo]);
   const roadName = (id: string) => (edges[id] ? edgeLabel(edges[id]) : `road ${id}`);
   const sigFeature = (pred: (p: SignalProps) => boolean) => geo?.features.find((f) => f.properties.kind === "signal" && pred(f.properties as SignalProps))?.properties as SignalProps | undefined;
-  const signalTitle = (id: string) => { const p = sigFeature((x) => x.id === id); return p ? signalLabel(p, edges) : `Signal ${id}`; };
+  const nodeName = (id: string) => {
+    const f = (baseGeo ?? geo)?.features.find((x) => x.properties.kind !== "edge" && x.properties.id === id)?.properties as SignalProps | JunctionProps | undefined;
+    if (!f) return `Junction ${id}`;
+    return f.kind === "signal" ? signalLabel(f, edges) : junctionLabel(f, edges);
+  };
+  const signalTitle = (id: string) => { const p = sigFeature((x) => x.id === id); return p ? signalLabel(p, edges) : nodeName(id); };
   const describe = (e: Edit) => {
     switch (e.type) {
       case "set_lanes": return `${roadName(e.edge)}: ${e.lanes} lanes (was ${edges[e.edge]?.lanes ?? "?"})`;
@@ -170,15 +181,21 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
       case "close_road": return `${roadName(e.edge)}: closed`;
       case "ban_turn": return `No turn from ${roadName(e.from_edge)} onto ${roadName(e.to_edge)}`;
       case "retime_signal": { const p = sigFeature((x) => x.tls.includes(e.tls)); return `${p ? signalLabel(p, edges) : `Signal ${e.tls}`}: new timing, ${Math.round(e.durations.reduce((a, b) => a + b, 0))} s cycle`; }
+      case "add_signal": return `${nodeName(e.node)}: new traffic signal`;
+      case "remove_signal": return `${nodeName(e.node)}: signal removed (priority junction)`;
+      case "set_lane_width": return `${roadName(e.edge)}: lanes ${e.width_m} m wide (was ${edges[e.edge]?.lane_width_m ?? "?"} m)`;
+      case "set_road_type": { const t = ROAD_TYPES.find((r) => r.id === e.road_type); return `${roadName(e.edge)}: ${t?.label.toLowerCase()} (${t?.speed_kmh} km/h)`; }
     }
   };
-  const zoomTo = (kind: "edge" | "signal", id: string) => {
+  const zoomTo = (kind: "edge" | "signal" | "junction", id: string) => {
     const f = geo?.features.find((x) => x.properties.kind === kind && x.properties.id === id);
-    if (f) setFocus({ bbox: featureBBox(f), key: Date.now(), maxZoom: kind === "signal" ? 17 : 17.5 });
+    if (f) setFocus({ bbox: featureBBox(f), key: Date.now(), maxZoom: kind === "edge" ? 17.5 : 17 });
   };
   const selectFromEdit = (e: Edit) => {
     const sel2: NonNullable<Selection> = e.type === "retime_signal"
       ? { kind: "signal", id: sigFeature((x) => x.tls.includes(e.tls))?.id ?? e.tls }
+      : e.type === "add_signal" ? { kind: "signal", id: e.node }
+      : e.type === "remove_signal" ? { kind: "junction", id: e.node }
       : { kind: "edge", id: "edge" in e ? e.edge : e.from_edge };
     setSel(sel2); zoomTo(sel2.kind, sel2.id);
   };

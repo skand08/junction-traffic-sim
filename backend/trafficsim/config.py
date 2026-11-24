@@ -28,3 +28,15 @@ DEFAULT_SEEDS = 10
 DRAIN_S = 1800          # extra simulated time after the demand window so trips can finish
 STEP_LENGTH = 1.0
 MAX_WORKERS = int(os.environ.get("TRAFFICSIM_WORKERS", max(1, (os.cpu_count() or 2) - 1)))
+
+
+def tool_env() -> dict:
+    """Environment for SUMO command-line tools: netconvert needs PROJ's database for map projections."""
+    env = dict(os.environ)
+    try:
+        import pyproj
+        env.setdefault("PROJ_DATA", pyproj.datadir.get_data_dir())
+        env.setdefault("PROJ_LIB", pyproj.datadir.get_data_dir())
+    except Exception:  # noqa: BLE001
+        pass
+    return env

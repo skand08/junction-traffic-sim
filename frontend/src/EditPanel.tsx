@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Edit, EdgeProps, Feature, Geometry, Scenario, SignalProgram, SignalProps } from "./types";
+import { ROAD_TYPES, type Edit, type EdgeProps, type Feature, type Geometry, type JunctionProps, type RoadType, type Scenario, type SignalProgram, type SignalProps } from "./types";
 import { edgeLabel, type Selection } from "./MapView";
 
 type Props = {
@@ -24,11 +24,41 @@ export default function EditPanel(props: Props) {
   if (!selection) {
     return (
       <p className="hint">
-        Click a road or a signal (dark dot) on the map, or pick one from the list below.
+        Click a road, a signal (dark dot) or a junction (ring, when zoomed in) on the map, or pick one from the list below.
       </p>
     );
   }
-  return selection.kind === "edge" ? <RoadEditor {...props} id={selection.id} /> : <SignalEditor {...props} id={selection.id} />;
+  if (selection.kind === "edge") return <RoadEditor {...props} id={selection.id} />;
+  if (selection.kind === "junction") return <JunctionEditor {...props} id={selection.id} />;
+  return <SignalEditor {...props} id={selection.id} />;
+}
+
+/** A junction without a signal: add one (or undo a removal made in this scenario). */
+function JunctionEditor({ id, geometry, scenario, onEdits, busy, signalTitle }: Props & { id: string }) {
+  const j = geometry?.features.find((f) => f.properties.kind === "junction" && f.properties.id === id)?.properties as JunctionProps | undefined;
+  const removedHere = scenario.edits.some((e) => e.type === "remove_signal" && e.node === id);
+  const rest = scenario.edits.filter((e) => !((e.type === "add_signal" || e.type === "remove_signal") && e.node === id));
+  if (!j) return <p className="hint">This junction is not in the current network.</p>;
+  return (
+    <div className="editor">
+      <h3>{signalTitle ? signalTitle(id) : `Junction ${id}`}</h3>
+      <p className="meta">
+        No signal: {j.control === "priority" ? "the main road has right of way" : j.control === "right_before_left" ? "traffic from the right goes first" : j.control.replace(/_/g, " ")}.
+        {" "}{j.incoming.length} roads in. <span className="id">id {id}</span>
+      </p>
+      {removedHere ? (
+        <>
+          <p className="note">This scenario removed the signal here.</p>
+          <button className="btn secondary" disabled={busy} onClick={() => onEdits(rest)}>Put the signal back</button>
+        </>
+      ) : (
+        <>
+          <button className="primary" disabled={busy} onClick={() => onEdits([...rest, { type: "add_signal", node: id }])}>Add a traffic signal</button>
+          <p className="small muted">SUMO gives it a standard fixed plan. You can retime it afterwards.</p>
+        </>
+      )}
+    </div>
+  );
 }
 
 function RoadEditor({ id, geometry, baseGeometry, scenario, onEdits, busy }: Props & { id: string }) {
@@ -38,8 +68,12 @@ function RoadEditor({ id, geometry, baseGeometry, scenario, onEdits, busy }: Pro
   const closed = edits.some((e) => e.type === "close_road" && e.edge === id);
   const laneEdit = edits.find((e) => e.type === "set_lanes" && e.edge === id) as Extract<Edit, { type: "set_lanes" }> | undefined;
   const speedEdit = edits.find((e) => e.type === "set_speed" && e.edge === id) as Extract<Edit, { type: "set_speed" }> | undefined;
+  const widthEdit = edits.find((e) => e.type === "set_lane_width" && e.edge === id) as Extract<Edit, { type: "set_lane_width" }> | undefined;
+  const typeEdit = edits.find((e) => e.type === "set_road_type" && e.edge === id) as Extract<Edit, { type: "set_road_type" }> | undefined;
   const lanes = laneEdit?.lanes ?? orig?.lanes ?? 1;
-  const speed = speedEdit?.speed_kmh ?? Math.round(orig?.speed_kmh ?? 50);
+  const roadPreset = typeEdit ? ROAD_TYPES.find((r) => r.id === typeEdit.road_type) : undefined;
+  const speed = speedEdit?.speed_kmh ?? roadPreset?.speed_kmh ?? Math.round(orig?.speed_kmh ?? 50);
+  const width = widthEdit?.width_m ?? orig?.lane_width_m ?? 3.2;
 
   const turns = useMemo(() => {
     if (!cur || !baseGeometry) return [];
@@ -60,8 +94,17 @@ function RoadEditor({ id, geometry, baseGeometry, scenario, onEdits, busy }: Pro
     const rest = without((e) => e.type === "set_speed" && e.edge === id);
     onEdits(v === Math.round(orig.speed_kmh) ? rest : [...rest, { type: "set_speed", edge: id, speed_kmh: v }]);
   };
+  const setWidth = (w: number) => {
+    const rest = without((e) => e.type === "set_lane_width" && e.edge === id);
+    onEdits(Math.abs(w - (orig.lane_width_m ?? 0)) < 0.01 ? rest : [...rest, { type: "set_lane_width", edge: id, width_m: w }]);
+  };
+  const setType = (t: RoadType | "") => {
+    // a road class sets the speed limit itself, so it replaces a separate speed change
+    const rest = without((e) => (e.type === "set_road_type" || e.type === "set_speed") && "edge" in e && e.edge === id);
+    onEdits(t ? [...rest, { type: "set_road_type", edge: id, road_type: t }] : rest);
+  };
   const toggleClosed = () => {
-    const rest = without((e) => "edge" in e && e.edge === id && ["close_road", "set_lanes", "set_speed"].includes(e.type));
+    const rest = without((e) => "edge" in e && e.edge === id && ["close_road", "set_lanes", "set_speed", "set_lane_width", "set_road_type"].includes(e.type));
     onEdits(closed ? rest : [...rest, { type: "close_road", edge: id }]);
   };
   const banned = (to: string) => edits.some((e) => e.type === "ban_turn" && e.from_edge === id && e.to_edge === to);
@@ -98,6 +141,26 @@ function RoadEditor({ id, geometry, baseGeometry, scenario, onEdits, busy }: Pro
           {SPEEDS.map((s) => <option key={s} value={s}>{s} km/h</option>)}
         </select>
       </label>
+
+      <label className="field">
+        <span className="label">Road type</span>
+        <select value={typeEdit?.road_type ?? ""} disabled={busy || closed} onChange={(e) => setType(e.target.value as RoadType | "")}>
+          <option value="">{orig.road_type ? `As it is (${orig.road_type.replace(/_/g, " ")})` : "As it is"}</option>
+          {ROAD_TYPES.map((r) => <option key={r.id} value={r.id}>{r.label}: {r.speed_kmh} km/h</option>)}
+        </select>
+      </label>
+      {typeEdit && <p className="small muted field-note">Sets the speed limit and who has right of way at junctions without signals.</p>}
+
+      <div className="field">
+        <span className="label">Lane width</span>
+        <div className="stepper">
+          <button disabled={busy || closed || width <= 2.5} onClick={() => setWidth(Math.round((width - 0.25) * 100) / 100)} aria-label="Narrower lanes">−</button>
+          <output>{width.toFixed(2)} m</output>
+          <button disabled={busy || closed || width >= 4.5} onClick={() => setWidth(Math.round((width + 0.25) * 100) / 100)} aria-label="Wider lanes">+</button>
+        </div>
+        {widthEdit && <span className="was">was {orig.lane_width_m} m</span>}
+      </div>
+      {widthEdit && <p className="small muted field-note">Recorded in the network, but SUMO's standard driving model does not change speed or capacity with lane width, so expect little effect on results.</p>}
 
       <div className="field">
         <span className="label">Road open to cars</span>
@@ -162,12 +225,26 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
   const [durs, setDurs] = useState<number[]>(edit?.durations ?? original);
   useEffect(() => setDurs(edit?.durations ?? original), [tid, prog?.cycle_s, edit?.durations?.join(",")]);
 
+  const addedHere = scenario.edits.some((e) => e.type === "add_signal" && e.node === id);
+  const removeSignal = () => {
+    const rest = scenario.edits.filter((e) => !(e.type === "retime_signal" && e.tls === tid) && !((e.type === "add_signal" || e.type === "remove_signal") && e.node === id));
+    onEdits(addedHere ? rest : [...rest, { type: "remove_signal", node: id }]);
+  };
+  const removeButton = (
+    <div className="danger-zone">
+      <button className="btn quiet small" disabled={busy} onClick={removeSignal}>
+        {addedHere ? "Undo: take this new signal out" : "Remove this signal"}
+      </button>
+      {!addedHere && <span className="small muted">It becomes a junction where the main road has right of way.</span>}
+    </div>
+  );
   if (!signals) return <p className="hint" role="status">Loading signal plan…</p>;
   if (!prog)
     return (
       <div className="editor">
         <h3>{signalTitle ? signalTitle(id) : `Signal ${id}`}</h3>
         <p className="banner-inline warn">This signal's timing can't be edited here. It is run together with a nearby junction.</p>
+        {removeButton}
       </div>
     );
   const cycle = durs.reduce((a, b) => a + b, 0);
@@ -237,6 +314,8 @@ function SignalEditor({ id, geometry, scenario, signals, onEdits, busy, signalTi
           </button>
         )}
       </div>
+      {addedHere && <p className="note">This signal is new in this scenario.</p>}
+      {removeButton}
     </div>
   );
 }

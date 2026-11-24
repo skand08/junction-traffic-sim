@@ -514,7 +514,9 @@ table.summary tbody tr { cursor: pointer; }
 table.summary tbody tr:hover, table.summary tr.picked { background: #fdf6dc; }
 table.summary td, table.summary th { vertical-align: middle; }
 .pill.dq-good, .pill.dq-caution, .pill.dq-unreliable { text-transform: capitalize; }
-.area-frame { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 4px var(--amber); z-index: 2; }
+.area-size { display: flex; align-items: flex-end; gap: 8px; margin: 4px 0 8px; }
+.area-size .field { flex: 1; }
+.area-size .times { padding-bottom: 10px; color: var(--asphalt-2); }
 .places { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; font-size: var(--t-s); }
 .warn-text { color: var(--warn-ink); font-weight: 700; }
 .panel .seg.wide { margin: 10px 0 6px; }
@@ -522,3 +524,24 @@ table.summary td, table.summary th { vertical-align: middle; }
 .card .row select { min-width: 220px; }
 
 .legend .dir { font-size: 16px; line-height: 1; font-weight: 800; color: var(--asphalt); text-shadow: 0 0 2px #fff; margin-right: 4px; }
+.area-hint { background: var(--paper); padding: 6px 10px; border-radius: var(--radius-s); margin: 0; z-index: 3; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+.danger-zone { display: flex; flex-direction: column; gap: 4px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.field-note { margin: -4px 0 8px; }
+
+/* results library and experiment details */
+.page.wide { max-width: 1080px; }
+table.library { width: 100%; border-collapse: collapse; font-size: var(--t-s); margin: 8px 0 12px; background: var(--paper); }
+table.library th, table.library td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.library thead th { font-weight: 600; color: var(--asphalt-2); border-bottom: 2px solid var(--line); }
+table.library .n-col { text-align: right; white-space: nowrap; }
+table.library tr.cont td { border-top: none; }
+table.library th[scope="rowgroup"] { border-right: 1px solid var(--line); }
+.lib-name { display: block; font-weight: 600; }
+.lib-sub { display: block; font-size: 12px; color: var(--asphalt-2); font-weight: 400; }
+.lib-actions { white-space: nowrap; }
+.lib-actions .btn { margin: 0 4px 4px 0; }
+ul.plain { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+dl.facts.wide { grid-template-columns: 200px 1fr; }
+.link.strong { font-weight: 600; font-size: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

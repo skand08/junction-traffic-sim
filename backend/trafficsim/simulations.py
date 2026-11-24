@@ -33,11 +33,11 @@ def load(sid: str) -> dict:
 
 
 def list_all() -> list:
-    out = [json.loads(f.read_text()) for f in SIM_DIR.glob("*.json")]
+    out = [json.loads(f.read_text()) for f in SIM_DIR.glob("*.json")]   # summaries/ is a subfolder, not matched
     return sorted(out, key=lambda s: s.get("created", 0), reverse=True)
 
 
 def delete(sid: str):
-    f = SIM_DIR / f"{sid}.json"
-    if f.exists():
-        f.unlink()
+    for f in (SIM_DIR / f"{sid}.json", SIM_DIR / "summaries" / f"{sid}.json"):
+        if f.exists():
+            f.unlink()

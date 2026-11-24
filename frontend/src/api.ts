@@ -1,4 +1,4 @@
-import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation } from "./types";
+import type { Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary } from "./types";
 
 const BASE = (import.meta as any).env?.VITE_API ?? "/api";
 
@@ -55,6 +55,7 @@ export const api = {
   // simulations
   simulations: (network?: string) => req<Simulation[]>(`/simulations${network ? `?network=${network}` : ""}`),
   simulation: (id: string) => req<Simulation>(`/simulations/${id}`),
+  results: (network?: string) => req<ResultSummary[]>(`/results${network ? `?network=${network}` : ""}`),
   startSimulation: (body: { reference: string; alternatives: string[]; seeds: number[]; depart_jitter_s: number; name?: string }) =>
     req<Simulation>("/simulations", { method: "POST", body: JSON.stringify(body) }),
   cancelSimulation: (id: string) => req<Simulation>(`/simulations/${id}/cancel`, { method: "POST" }),

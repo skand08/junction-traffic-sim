@@ -45,6 +45,7 @@ export function relatedEdits(x: Explained, edits: Edit[], geo: Geometry | null):
   return edits
     .map((e, i) => {
       if (e.type === "retime_signal") return e.tls === x.tls ? i : -1;
+      if (e.type === "add_signal" || e.type === "remove_signal") return e.node === x.tls ? i : -1;
       const id = "edge" in e ? e.edge : e.from_edge;
       return roads.has(id) || (e.type === "ban_turn" && roads.has(e.to_edge)) ? i : -1;
     })

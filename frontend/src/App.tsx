@@ -29,7 +29,7 @@ function Icon({ d }: { d: string }) {
 // the URL hash remembers where you are, so a reload comes back to the same place
 function readHash() {
   const h = new URLSearchParams(window.location.hash.slice(1));
-  return { s: h.get("s") as Section | null, n: h.get("n"), sc: h.get("sc"), sim: h.get("sim") };
+  return { s: h.get("s") as Section | null, n: h.get("n"), sc: h.get("sc"), sim: h.get("sim"), exp: h.get("exp") };
 }
 
 export default function App() {
@@ -42,6 +42,7 @@ export default function App() {
   const [netSel, setNetSel] = useState<string | null>(init.n);
   const [scenSel, setScenSel] = useState<string | null>(init.sc);
   const [simSel, setSimSel] = useState<string | null>(init.sim);
+  const [expSel, setExpSel] = useState<string | null>(init.exp);
   const [newScenFor, setNewScenFor] = useState<string | null>(null);
   const [simPreset, setSimPreset] = useState<{ network: string; scenario?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,8 +65,9 @@ export default function App() {
     if (section === "network" && netSel) h.set("n", netSel);
     if (section === "scenario" && scenSel) h.set("sc", scenSel);
     if (section === "results" && simSel) h.set("sim", simSel);
+    if (section === "experiments" && expSel) h.set("exp", expSel);
     window.history.replaceState(null, "", `#${h.toString()}`);
-  }, [section, netSel, scenSel, simSel]);
+  }, [section, netSel, scenSel, simSel, expSel]);
 
   // poll while any simulation runs; when one finishes, the lists refresh so Results can show it
   const running = sims.some((s) => s.state === "running");
@@ -102,7 +104,8 @@ export default function App() {
       <div className="shell">
         <nav className="side" aria-label="Sections">
           {SECTIONS.map((s) => (
-            <button key={s.id} className="side-item" aria-current={section === s.id ? "page" : undefined} onClick={() => go(s.id)} aria-label={s.name}>
+            <button key={s.id} className="side-item" aria-current={section === s.id ? "page" : undefined} aria-label={s.name}
+              onClick={() => { if (s.id === "results") setSimSel(null); if (s.id === "experiments") setExpSel(null); go(s.id); }}>
               <Icon d={s.icon} />
               <span className="side-name">{s.name}</span><span className="side-short" aria-hidden="true">{s.short}</span>
               {s.id === "simulation" && running && <span className="spinner" aria-label="running" />}
@@ -184,10 +187,12 @@ export default function App() {
           )}
           {section === "results" && (
             <ResultsPage sims={sims} networks={networks} selected={simSel} onSelect={setSimSel} fail={fail}
-              onEditScenario={(id) => { setScenSel(id); go("scenario"); }} />
+              onEditScenario={(id) => { setScenSel(id); go("scenario"); }} onOpenFile={() => fileRef.current?.click()}
+              onExperiment={(id) => { setExpSel(id); go("experiments"); }} />
           )}
           {section === "experiments" && (
             <Experiments sims={sims} networks={networks} fail={fail} onChanged={loadSims} onOpenFile={() => fileRef.current?.click()}
+              selected={expSel} onSelect={setExpSel} onScenario={(id) => { setScenSel(id); go("scenario"); }}
               onOpen={(id) => { setSimSel(id); go("results"); }} />
           )}
         </div>

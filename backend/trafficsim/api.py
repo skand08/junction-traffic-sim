@@ -4,6 +4,7 @@ Run: uvicorn trafficsim.api:app --reload   (from the backend/ directory)
 """
 import os
 import shutil
+import json
 import tempfile
 import uuid
 import threading
@@ -285,7 +286,7 @@ def scenario_geometry(sid: str):
     names.label_edges(g["features"], s.base_network)
     edited = {}
     for e in s.edits:
-        for key in ("edge", "from_edge"):
+        for key in ("edge", "from_edge", "node"):
             if hasattr(e, key):
                 edited.setdefault(getattr(e, key), []).append(e.type)
     return dict(g, edited=edited)
@@ -424,6 +425,56 @@ def _sim_status(sim: dict) -> dict:
 @app.get("/api/simulations")
 def list_simulations(network: Optional[str] = None):
     return [_sim_status(s) for s in simulations.list_all() if not network or s["network"] == network]
+
+
+SUMMARY_DIR = simulations.SIM_DIR / "summaries"     # one cached headline per finished simulation
+
+
+def _sim_summary(sim: dict) -> dict:
+    """Headline numbers of a finished simulation: per tested scenario, the change in travel time on the
+    same trips against the reference. Runs never change once done, so this is computed once and cached."""
+    SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+    f = SUMMARY_DIR / f"{sim['id']}.json"
+    if f.exists():
+        return json.loads(f.read_text())
+    ref = jobs.load_run(sim["reference"]["run_id"])
+    alts = []
+    for a in sim["alternatives"]:
+        r = jobs.load_run(a["run_id"])
+        c = analysis.compare(ref["seed_results"], r["seed_results"], ref["seeds"], r["seeds"])
+        k = c["kpis"].get("matched_travel_time_s") or c["kpis"].get("mean_travel_time_s") or {}
+        tele = c["kpis"].get("teleported_trips") or {}
+        alts.append(dict(scenario_id=a["scenario_id"], scenario_name=a["scenario_name"], run_id=a["run_id"],
+                         controller=r["scenario"].get("controller"), edits=len(r["scenario"].get("edits", [])),
+                         before_s=k.get("before"), after_s=k.get("after"), diff_s=k.get("diff"),
+                         pct=k.get("pct_change"), verdict=k.get("verdict"), confidence=k.get("confidence"),
+                         better=round((k.get("share_seeds_better") or 0) * (k.get("n") or 0)), n=k.get("n"),
+                         teleports_before=tele.get("before"), teleports_after=tele.get("after")))
+    out = dict(id=sim["id"], alternatives=alts, versions=ref.get("versions"),
+               started=ref.get("started"), finished=max([jobs.load_run(a["run_id"]).get("finished") or 0
+                                                         for a in sim["alternatives"]] + [ref.get("finished") or 0]))
+    f.write_text(json.dumps(out))
+    return out
+
+
+@app.get("/api/results")
+def results_library(network: Optional[str] = None):
+    """Every finished simulation with its headline result, newest first."""
+    out = []
+    for s in simulations.list_all():
+        if network and s["network"] != network:
+            continue
+        st = _sim_status(s)
+        if st["state"] != "done":
+            continue
+        try:
+            summ = _sim_summary(s)
+        except (KeyError, FileNotFoundError):
+            continue
+        out.append(dict(id=s["id"], name=s["name"], network=s["network"], created=s["created"], seeds=s["seeds"],
+                        depart_jitter_s=s.get("depart_jitter_s", 0), rerun_of=s.get("rerun_of"),
+                        reference_name=s["reference"]["scenario_name"], **{k: summ[k] for k in ("alternatives", "versions", "started", "finished")}))
+    return out
 
 
 @app.get("/api/simulations/{sid}")
