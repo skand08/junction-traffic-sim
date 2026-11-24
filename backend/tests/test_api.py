@@ -440,3 +440,71 @@ def test_pressure_looks_past_short_lane_pieces():
     net = sumolib.net.readNet(nets[0])
     reach = sum(net.getLane(x).getLength() for x in fwd[short])
     assert reach >= runner.MP_REACH_M
+
+
+def _live_frames(lid, until, timeout=120):
+    """Long-poll frames until `until(frame)` is true; return that frame."""
+    t0, after = time.time(), 0
+    while time.time() - t0 < timeout:
+        f = c.get(f"/api/live/{lid}/frame", params={"after": after}).json()
+        if f.get("seq"):
+            after = f["seq"]
+            if until(f):
+                return f
+        time.sleep(0.2)
+    raise TimeoutError(lid)
+
+
+def test_live_session_streams_real_sumo_state():
+    base = [x for x in c.get("/api/scenarios").json() if x["base_network"] == "grid3x3" and x.get("baseline")]
+    sid = (base[0] if base else c.post("/api/networks/grid3x3/baseline").json())["id"]
+    # an impossible route is refused before anything starts
+    r = c.post("/api/live", json={"scenario_id": sid, "routes": [{"from_edge": "A0A1", "to_edge": "nope", "per_hour": 100}]})
+    assert r.status_code == 422
+    r = c.post("/api/live", json={"scenario_id": sid, "controller": "actuated", "intensity": "high", "profile": "morning",
+                                  "mix": "mixed", "duration_min": 10,
+                                  "routes": [{"from_edge": "left0A0", "to_edge": "C2right2", "per_hour": 600}]})
+    assert r.status_code == 200, r.text
+    info = r.json()
+    lid = info["id"]
+    assert info["controller"] == "actuated" and info["window_end"] - info["begin"] == 600
+    c.post(f"/api/live/{lid}/control", json={"action": "speed", "speed": 0})
+    f = _live_frames(lid, lambda f: f["kpi"]["running"] > 20)
+    k = f["kpi"]
+    v = f["veh"][0]
+    assert len(f["veh"]) == k["running"] and len(v) == 7 and abs(v[2]) < 1         # [id, lon, lat, ...]; grid sits at a fake origin
+    assert sum(e[0] for e in f["edges"].values()) <= k["running"]                    # vehicles on edges (not inside junctions)
+    assert set(f["tls"]) and all(len(s[0]) > 0 for s in f["tls"].values())
+    assert {t for *_, t, _w in f["veh"]} <= {0, 1, 2, 3}
+    assert any(x[0].startswith("user0") for x in _live_frames(lid, lambda f: any(x[0].startswith("user0") for x in f["veh"]))["veh"])
+    # inspection: per-lane numbers for a road, state and approaches for a signal
+    edge = next(iter(f["edges"]))
+    c.post(f"/api/live/{lid}/control", json={"action": "watch", "watch": {"edge": edge}})
+    w = _live_frames(lid, lambda f: bool(f.get("watch")) and f["watch"].get("edge") == edge)["watch"]
+    assert w["lanes"] and {"vehicles", "halting", "speed_kmh", "width_m"} <= set(w["lanes"][0])
+    c.post(f"/api/live/{lid}/control", json={"action": "watch", "watch": {"tls": "B1"}})
+    w = _live_frames(lid, lambda f: bool(f.get("watch")) and f["watch"].get("tls") == "B1")["watch"]
+    assert w["state"] and w["approaches"] and w["phases"]
+    # pause holds the clock; resume and reset work
+    c.post(f"/api/live/{lid}/control", json={"action": "pause"})
+    t1 = _live_frames(lid, lambda f: f["state"] == "paused")["t"]
+    time.sleep(1)
+    assert c.get(f"/api/live/{lid}/frame", params={"after": 0}).json()["t"] == t1
+    info = c.post(f"/api/live/{lid}/control", json={"action": "reset"}).json()
+    assert info["run"] == 2
+    f = _live_frames(lid, lambda f: f["run"] == 2 and f["seq"] >= 1)
+    assert f["t"] < t1
+    st = c.get(f"/api/live/{lid}/static").json()
+    assert st["lanes"] and st["signal_marks"]
+    c.delete(f"/api/live/{lid}")
+    assert c.get(f"/api/live/{lid}").status_code == 404
+
+
+def test_live_demand_profiles_keep_count_and_shape():
+    from trafficsim.live import profile_times
+    for prof in ("normal", "morning", "evening"):
+        ts = profile_times(1000, 0, 3600, prof)
+        assert len(ts) == 1000 and ts == sorted(ts) and 0 <= ts[0] and ts[-1] <= 3600
+    early = sum(t < 1800 for t in profile_times(1000, 0, 3600, "morning"))
+    late = sum(t < 1800 for t in profile_times(1000, 0, 3600, "evening"))
+    assert early > 600 and late < 400

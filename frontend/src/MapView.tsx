@@ -10,7 +10,7 @@ export type MapMode = "layout" | "results" | "change";
 export type Selection = { kind: "edge" | "signal" | "junction"; id: string } | null;
 
 const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
-type RGBA = [number, number, number, number];
+export type RGBA = [number, number, number, number];
 // Colour roles (design system): amber is only selection/hover; red is never a map colour.
 export const C = {
   road: [91, 99, 107, 255] as RGBA,       // ink-2
@@ -31,7 +31,7 @@ const DELAY_STOPS: [number, RGBA][] = [
 ];
 export const DELAY_LEGEND = DELAY_STOPS.map(([v, c]) => ({ v, c }));
 
-function delayColor(d: number | null | undefined): RGBA {
+export function delayColor(d: number | null | undefined): RGBA {
   if (d == null) return C.noData;
   for (let i = 1; i < DELAY_STOPS.length; i++) {
     const [v1, c1] = DELAY_STOPS[i];
@@ -98,6 +98,11 @@ type Props = {
   /** Area picker: a box of exactly w_km × h_km centred on the map centre; moving the map moves the box. */
   areaBox?: { w_km: number; h_km: number; center?: { lon: number; lat: number; key: number } } | null;
   onArea?: (bbox: [number, number, number, number], center: { lon: number; lat: number }) => void;
+  /** Live view: colour roads from live data (null keeps the normal colour), and extra layers on top. */
+  edgeColor?: ((p: EdgeProps) => RGBA | null) | null;
+  edgeColorKey?: unknown;                              // changes whenever edgeColor's data changes
+  extraLayers?: (zoom: number) => any[];
+  onZoom?: (zoom: number) => void;
 };
 
 const DEFAULT_VIEW = { longitude: 73.8567, latitude: 18.5204, zoom: 15.5 };   // Pune, India
@@ -108,7 +113,7 @@ export function boxAround(lon: number, lat: number, w_km: number, h_km: number):
   return [lon - dLon, lat - dLat, lon + dLon, lat + dLat];
 }
 
-export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus, basemap, areaBox, onArea }: Props) {
+export default function MapView({ geometry, mode, selection, onSelect, hoverId, runEdges, cmpEdges, focus, basemap, areaBox, onArea, edgeColor, edgeColorKey, extraLayers, onZoom }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(basemap && !geometry ? DEFAULT_VIEW : { longitude: 0, latitude: 0, zoom: 14 });
@@ -166,6 +171,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
   const colorFor = (f: Feature): RGBA => {
     const p = f.properties as EdgeProps;
     if (!p.car_allowed) return [0, 0, 0, 0];   // drawn by the closed-road layers below
+    if (edgeColor) { const c = edgeColor(p); if (c) return c; }
     if (mode === "results") return delayColor(runEdges?.[p.id]?.delay_per_veh_s);
     if (mode === "change") {
       const ch = cmpEdges?.[p.id]?.change;
@@ -197,7 +203,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       id: "roads", data: edges, pickable: true, autoHighlight: true, highlightColor: [242, 183, 5, 170],
       getPath: (f) => (f.geometry as any).coordinates, getColor: colorFor, getWidth: widthFor,
       widthUnits: "meters", widthMinPixels: 2, capRounded: true, jointRounded: true,
-      updateTriggers: { getColor: [mode, runEdges, cmpEdges, edited] },
+      updateTriggers: { getColor: [mode, runEdges, cmpEdges, edited, edgeColorKey] },
       onClick: (info) => info.object && onSelect({ kind: "edge", id: info.object.properties.id }),
     }),
     // travel direction, shown once zoomed in: dark chevrons with a light outline read on any road colour
@@ -240,6 +246,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       updateTriggers: { getFillColor: [selection], getRadius: [hoverId] },
       onClick: (info) => info.object && onSelect({ kind: "signal", id: info.object.properties.id }),
     }),
+    ...(extraLayers ? extraLayers(view.zoom) : []),
   ];
 
   const tooltip = (info: any) => {
@@ -259,6 +266,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
     setHover({ x: info.x, y: info.y, text });
   };
 
+  useEffect(() => { onZoom?.(view.zoom); }, [Math.round(view.zoom * 4)]);
   const zoomBy = (d: number) => setView((v) => ({ ...v, zoom: Math.max(1, Math.min(20, v.zoom + d)) }));
 
   return (

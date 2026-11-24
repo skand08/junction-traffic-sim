@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobRow } from "../RunMonitor";
 import { CONTROLLERS, when, listNav } from "../shared";
 import type { Health, Network, Scenario, Simulation as Sim } from "../types";
+import LiveSim from "./LiveSim";
 
 const REPEATS = [5, 10, 20];
 
@@ -19,7 +20,23 @@ type Props = {
   fail: (e: unknown) => void;
 };
 
-export default function SimulationPage({ networks, scenarios, sims, health, preset, onStarted, onChanged, onResults, onEditScenario, fail }: Props) {
+/** Traffic Simulation: a live, map-first view of one run, and the batch comparison of scenarios over many runs. */
+export default function SimulationPage(props: Props) {
+  const [tab, setTab] = useState<"live" | "compare">(() => (sessionStorage.getItem("junction.simtab") as "live" | "compare") || "live");
+  useEffect(() => { sessionStorage.setItem("junction.simtab", tab); }, [tab]);
+  const running = props.sims.some((s) => s.state === "running");
+  const tabs = (
+    <div className="seg wide sim-tabs" role="tablist" aria-label="Simulation mode">
+      <button role="tab" aria-selected={tab === "live"} onClick={() => setTab("live")}>Live view</button>
+      <button role="tab" aria-selected={tab === "compare"} onClick={() => setTab("compare")}>Compare scenarios{running ? " ·" : ""}</button>
+    </div>
+  );
+  return tab === "live"
+    ? <LiveSim networks={props.networks} scenarios={props.scenarios} preset={props.preset} onChanged={props.onChanged} fail={props.fail} tabs={tabs} />
+    : <CompareRuns {...props} tabs={tabs} />;
+}
+
+function CompareRuns({ networks, scenarios, sims, health, preset, onStarted, onChanged, onResults, onEditScenario, fail, tabs }: Props & { tabs: React.ReactNode }) {
   const [nid, setNid] = useState<string>(preset?.network ?? "");
   const [ref, setRef] = useState<string>("");
   const [alts, setAlts] = useState<string[]>(preset?.scenario ? [preset.scenario] : []);
@@ -66,7 +83,8 @@ export default function SimulationPage({ networks, scenarios, sims, health, pres
       <section className="page">
         <div className="page-head">
           <h1>Traffic Simulation</h1>
-          <p className="lead">Run scenarios against a reference with the same traffic, several times each. Simulations run in the background; you can keep working.</p>
+          {tabs}
+          <p className="lead">Compare scenarios against a reference with the same traffic, several runs each, for results you can trust. Runs go on in the background; you can keep working.</p>
         </div>
 
         <div className="card">

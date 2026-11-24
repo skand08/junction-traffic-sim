@@ -128,12 +128,14 @@ def _is_green(state: str) -> bool:
     return any(c in "Gg" for c in state) and "y" not in state
 
 
-def _run_max_pressure(job: dict, out: Path):
-    import libsumo as ls
-    fwd, back = _lane_reach(job["net_file"])
-    ls.start(["sumo", *_common_args(job, out)])
-    try:
-        ctrl = {}
+class PressureController:
+    """Pressure-based signal control over a running SUMO (libsumo) simulation. Call step() once after
+    every simulationStep(). Used by batch runs and by the live view, so both behave the same."""
+
+    def __init__(self, ls, net_file: str):
+        self.ls = ls
+        self.fwd, self.back = _lane_reach(net_file)
+        self.ctrl = {}
         for tid in ls.trafficlight.getIDList():
             logic = ls.trafficlight.getAllProgramLogics(tid)[0]
             phases = [(p.duration, p.state) for p in logic.phases]
@@ -156,62 +158,74 @@ def _run_max_pressure(job: dict, out: Path):
             ls.trafficlight.setPhaseDuration(tid, 1e6)
             t0 = ls.simulation.getTime()
             program = ls.trafficlight.getProgram(tid)
-            ctrl[tid] = dict(phases=phases, greens=greens, mov=movements, cur=greens[0],
-                             since=t0, queue=[], until=None, target=None,
-                             served={g: t0 for g in greens}, program=program)
+            self.ctrl[tid] = dict(phases=phases, greens=greens, mov=movements, cur=greens[0],
+                                  since=t0, queue=[], until=None, target=None,
+                                  served={g: t0 for g in greens}, program=program)
+
+    def step(self):
+        ls, fwd, back = self.ls, self.fwd, self.back
+        now = ls.simulation.getTime()
+        halting = {}
+
+        def h1(lane):
+            if lane not in halting:
+                halting[lane] = ls.lane.getLastStepHaltingNumber(lane)
+            return halting[lane]
+
+        def h_in(lane):        # queue waiting to use this movement, over the road before the signal
+            return sum(h1(x) for x in back.get(lane, [lane]))
+
+        def h_out(lane):       # queue already on the road the movement feeds
+            return sum(h1(x) for x in fwd.get(lane, [lane]))
+
+        for tid, c in self.ctrl.items():
+            if c["until"] is not None:                      # in an amber/all-red transition
+                if now >= c["until"]:
+                    if c["queue"]:
+                        state, dur = c["queue"].pop(0)
+                        ls.trafficlight.setRedYellowGreenState(tid, state)
+                        c["until"] = now + dur
+                    else:
+                        ls.trafficlight.setProgram(tid, c["program"])
+                        ls.trafficlight.setPhase(tid, c["target"])
+                        ls.trafficlight.setPhaseDuration(tid, 1e6)
+                        c.update(cur=c["target"], since=now, until=None, target=None)
+                continue
+            c["served"][c["cur"]] = now
+            if now - c["since"] < MP_MIN_GREEN or int(now) % MP_DECISION:
+                continue
+            pressure = {g: sum(h_in(i) - h_out(o) for i, o in c["mov"][g]) for g in c["greens"]}
+            # starvation guard: a phase with waiting cars gets green after MP_MAX_WAIT seconds
+            starved = [g for g in c["greens"] if g != c["cur"] and now - c["served"][g] > MP_MAX_WAIT
+                       and sum(h1(i) for i, _ in c["mov"][g]) > 0]
+            if starved:
+                best = max(starved, key=lambda g: now - c["served"][g])
+            else:
+                best = max(pressure, key=pressure.get)
+                if best == c["cur"] or pressure[best] <= pressure[c["cur"]]:
+                    continue
+            # Build the transition for this specific pair of phases: amber for movements that lose
+            # green, then all-red for them, while movements green in both phases keep going.
+            cur_s, tgt_s = c["phases"][c["cur"]][1], c["phases"][best][1]
+            keep = [a in "Gg" and b in "Gg" for a, b in zip(cur_s, tgt_s)]
+            amber = "".join(a if k else ("y" if a in "Gg" else "r") for a, k in zip(cur_s, keep))
+            allred = "".join(a if k else "r" for a, k in zip(cur_s, keep))
+            c["target"] = best
+            c["queue"] = [(allred, MP_ALL_RED)]
+            ls.trafficlight.setRedYellowGreenState(tid, amber)
+            c["until"] = now + MP_AMBER
+
+
+def _run_max_pressure(job: dict, out: Path):
+    import libsumo as ls
+    fwd_back_net = job["net_file"]
+    ls.start(["sumo", *_common_args(job, out)])
+    try:
+        ctrl = PressureController(ls, fwd_back_net)
         end = job["end"] + config.DRAIN_S
         while ls.simulation.getTime() < end:
             ls.simulationStep()
-            now = ls.simulation.getTime()
-            halting = {}
-
-            def h1(lane):
-                if lane not in halting:
-                    halting[lane] = ls.lane.getLastStepHaltingNumber(lane)
-                return halting[lane]
-
-            def h_in(lane):        # queue waiting to use this movement, over the road before the signal
-                return sum(h1(x) for x in back.get(lane, [lane]))
-
-            def h_out(lane):       # queue already on the road the movement feeds
-                return sum(h1(x) for x in fwd.get(lane, [lane]))
-
-            for tid, c in ctrl.items():
-                if c["until"] is not None:                      # in an amber/all-red transition
-                    if now >= c["until"]:
-                        if c["queue"]:
-                            state, dur = c["queue"].pop(0)
-                            ls.trafficlight.setRedYellowGreenState(tid, state)
-                            c["until"] = now + dur
-                        else:
-                            ls.trafficlight.setProgram(tid, c["program"])
-                            ls.trafficlight.setPhase(tid, c["target"])
-                            ls.trafficlight.setPhaseDuration(tid, 1e6)
-                            c.update(cur=c["target"], since=now, until=None, target=None)
-                    continue
-                c["served"][c["cur"]] = now
-                if now - c["since"] < MP_MIN_GREEN or int(now) % MP_DECISION:
-                    continue
-                pressure = {g: sum(h_in(i) - h_out(o) for i, o in c["mov"][g]) for g in c["greens"]}
-                # starvation guard: a phase with waiting cars gets green after MP_MAX_WAIT seconds
-                starved = [g for g in c["greens"] if g != c["cur"] and now - c["served"][g] > MP_MAX_WAIT
-                           and sum(h1(i) for i, _ in c["mov"][g]) > 0]
-                if starved:
-                    best = max(starved, key=lambda g: now - c["served"][g])
-                else:
-                    best = max(pressure, key=pressure.get)
-                    if best == c["cur"] or pressure[best] <= pressure[c["cur"]]:
-                        continue
-                # Build the transition for this specific pair of phases: amber for movements that lose
-                # green, then all-red for them, while movements green in both phases keep going.
-                cur_s, tgt_s = c["phases"][c["cur"]][1], c["phases"][best][1]
-                keep = [a in "Gg" and b in "Gg" for a, b in zip(cur_s, tgt_s)]
-                amber = "".join(a if k else ("y" if a in "Gg" else "r") for a, k in zip(cur_s, keep))
-                allred = "".join(a if k else "r" for a, k in zip(cur_s, keep))
-                c["target"] = best
-                c["queue"] = [(allred, MP_ALL_RED)]
-                ls.trafficlight.setRedYellowGreenState(tid, amber)
-                c["until"] = now + MP_AMBER
+            ctrl.step()
     finally:
         ls.close()
 
