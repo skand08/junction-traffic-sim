@@ -25,6 +25,7 @@ from .. import config, jobqueue, store
 
 AGENTS_DIR = config.WORKSPACE_DIR / "research" / "agents"
 DOCS = "research/agents"
+LIST_DOCS = ("config.json", "manifest.json", "status.json")
 MAX_TRAININGS = int(os.environ.get("JUNCTION_MAX_TRAININGS", "2"))    # at once, across all workers
 
 
@@ -364,7 +365,7 @@ class TrainingManager:
         self.lock = threading.Lock()
         self.max_jobs = max_jobs
         if not store.SHARED:                       # one machine: jobs cut off by a server restart
-            for aid, docs in store.docs.group(DOCS).items():
+            for aid, docs in store.docs.group(DOCS, ("status.json",)).items():
                 st = docs.get("status.json") or {}
                 if st.get("state") in ("running", "paused", "queued", "evaluating") and not _alive(st.get("pid")):
                     _write_status(AGENTS_DIR / aid, state="interrupted")
@@ -472,8 +473,8 @@ class TrainingManager:
 
     def list(self) -> list:
         out = []
-        for aid, docs in store.docs.group(DOCS).items():
-            if all(n in docs for n in ("config.json", "manifest.json", "status.json")):
+        for aid, docs in store.docs.group(DOCS, LIST_DOCS).items():
+            if all(n in docs for n in LIST_DOCS):
                 out.append(self._info(aid, docs, not store.SHARED, self.running(aid)))
         return sorted(out, key=lambda a: a["manifest"].get("created") or 0, reverse=True)
 

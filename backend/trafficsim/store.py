@@ -92,15 +92,18 @@ class FileDocs:
                 continue
         return out
 
-    def group(self, coll: str) -> dict:
-        """{id: {name: data}} for every coll/<id>/<name>.json; ids newest first."""
+    def group(self, coll: str, names: Optional[Iterable[str]] = None) -> dict:
+        """{id: {name: data}} for every coll/<id>/<name>.json; ids newest first. With `names`, only those
+        documents are read (lists need a few small ones, not large results)."""
         d = self._f(coll)
         if not d.exists():
             return {}
         out = {}
         for sub in sorted((p for p in d.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True):
             docs = {}
-            for f in sub.glob("*.json"):
+            for f in ([sub / n for n in names] if names else sub.glob("*.json")):
+                if not f.is_file():
+                    continue
                 try:
                     docs[f.name] = json.loads(f.read_text())
                 except (json.JSONDecodeError, FileNotFoundError):
@@ -144,10 +147,13 @@ class PgDocs:
         with db.conn() as c:
             c.execute("DELETE FROM documents WHERE path = %s OR path LIKE %s", (p, like + "/%"))
 
-    def _rows(self, coll: str):
+    def _rows(self, coll: str, names: Optional[Iterable[str]] = None):
+        sql, args = "SELECT path, data FROM documents WHERE collection = %s", [collection(coll + "/x/y")]
+        if names:                     # filter in the database: other documents (large results) are never sent
+            sql += " AND regexp_replace(path, '^.*/', '') = ANY(%s)"
+            args.append(list(names))
         with db.conn() as c:
-            return c.execute("SELECT path, data FROM documents WHERE collection = %s ORDER BY created_at DESC",
-                             (collection(coll + "/x/y"),)).fetchall()
+            return c.execute(sql + " ORDER BY created_at DESC", args).fetchall()
 
     def items(self, coll: str, name: Optional[str] = None) -> list:
         n = len(coll.split("/"))
@@ -160,10 +166,10 @@ class PgDocs:
                 out.append((parts[n][:-5], data))
         return out
 
-    def group(self, coll: str) -> dict:
+    def group(self, coll: str, names: Optional[Iterable[str]] = None) -> dict:
         n = len(coll.split("/"))
         out: dict = {}
-        for path, data in self._rows(coll):
+        for path, data in self._rows(coll, names):
             parts = path.split("/")
             if len(parts) == n + 2 and parts[-1].endswith(".json"):
                 out.setdefault(parts[n], {})[parts[-1]] = data
@@ -308,7 +314,21 @@ logs = PgLogs() if SHARED else FileLogs(config.WORKSPACE_DIR)
 files = _files()
 
 
-def ready():
-    """Create tables on first use of a database (no-op for local files)."""
-    if SHARED:
+DB_ERROR: Optional[str] = None
+
+
+def ready(strict: bool = True):
+    """Create tables on first use of a database (no-op for local files). strict=False (the API): log a failure
+    and keep serving, so /api/health can say what is wrong instead of the server never starting."""
+    global DB_ERROR
+    if not SHARED:
+        return
+    print(f"Database: {db.describe()}", flush=True)
+    try:
         db.migrate()
+        DB_ERROR = None
+    except Exception as e:  # noqa: BLE001
+        DB_ERROR = f"Cannot reach the database ({db.describe()}): {type(e).__name__}: {str(e).splitlines()[0][:300]}"
+        print(DB_ERROR, flush=True)
+        if strict:
+            raise SystemExit(DB_ERROR)
