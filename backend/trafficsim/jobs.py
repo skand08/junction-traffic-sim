@@ -220,8 +220,8 @@ class JobManager:
         # write results before announcing the final state, so a client that sees "done" can read them
         if rid in self.detached:
             return
-        store.docs.write(f"runs/{rid}/run.json", record)
-        store.docs.write(f"runs/{rid}/row.json", run_row(record))
+        # together, list entry first: a run counts as finished once run.json exists, and must be in the list by then
+        store.docs.write_many([(f"runs/{rid}/row.json", run_row(record)), (f"runs/{rid}/run.json", record)])
         self._set(rid, **final)
 
 
