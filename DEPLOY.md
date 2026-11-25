@@ -148,6 +148,7 @@ These are the main variables. `.env.example` has the full list with defaults.
 | `JUNCTION_WORKER_RUNS`, `…_TRAININGS`, `…_BENCHMARKS`, `…_CALIBRATIONS`, `…_LIVE` | optional | Jobs at once per worker instance |
 | `TRAFFICSIM_WORKERS` | optional | SUMO processes at once per job. Default: CPU count − 1 |
 | `JUNCTION_WORKER_IDLE_POLL_S` | optional | How often an idle worker checks for work (see costs below) |
+| `TRAFFICSIM_OVERPASS`, `TRAFFICSIM_OVERPASS_TIMEOUT_S`, `TRAFFICSIM_OVERPASS_BUDGET_S` | optional | OpenStreetMap download servers (comma separated, tried in order), seconds per try (default 60) and in total (default 200, under the 300 s request limit) |
 | `JUNCTION_CONTROLLER_HOSTS` | optional | Hosts that external signal controllers may run on. Only these can be called |
 
 ## Workflows
@@ -177,7 +178,10 @@ add columns and tables, and drop old ones in a later release.
 
 ### Previews
 
-Daemons run only for production, so a preview has no worker. In a preview you can:
+On Vercel the API never runs jobs itself: without `JUNCTION_EXECUTION` it uses the queue (running jobs inside a
+function fails, because the function stops between requests). If a preview shares production's database, the
+production worker runs the preview's jobs too, with production's code. With its own database branch, as
+recommended above, a preview has no worker. In a preview you can then:
 
 - browse;
 - edit scenarios;

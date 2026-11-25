@@ -13,7 +13,9 @@ from typing import Optional
 
 from . import db
 
-EXECUTION = os.environ.get("JUNCTION_EXECUTION", "local")    # local: the API runs jobs itself; queue: a worker does
+# local: the API runs jobs itself; queue: a worker does. On Vercel (VERCEL is set) the API is a function that stops
+# between requests, so it never runs jobs itself unless told to explicitly.
+EXECUTION = os.environ.get("JUNCTION_EXECUTION") or ("queue" if os.environ.get("VERCEL") else "local")
 
 
 def remote() -> bool:

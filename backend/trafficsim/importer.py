@@ -26,8 +26,14 @@ from . import catalog, config, store
 # Public Overpass servers, tried in order; set TRAFFICSIM_OVERPASS to use your own (comma-separated).
 OVERPASS_URLS = [u.strip() for u in os.environ.get(
     "TRAFFICSIM_OVERPASS",
-    "https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter").split(",") if u.strip()]
+    "https://overpass-api.de/api/interpreter,https://maps.mail.ru/osm/tools/overpass/api/interpreter,"
+    "https://overpass.private.coffee/api/interpreter").split(",") if u.strip()]
 BUSY = {429, 502, 503, 504}   # Overpass answers these when it is at capacity
+BUSY_WAITS = (0, 3, 8)        # seconds to wait before each try at a busy server
+# A public server that hangs must not use up the request (Vercel stops requests at 300 s): each try gets
+# OVERPASS_TIMEOUT_S to answer, and no new try starts once OVERPASS_BUDGET_S has passed.
+OVERPASS_TIMEOUT_S = float(os.environ.get("TRAFFICSIM_OVERPASS_TIMEOUT_S", "60"))
+OVERPASS_BUDGET_S = float(os.environ.get("TRAFFICSIM_OVERPASS_BUDGET_S", "200"))
 MAX_AREA_KM2 = float(os.environ.get("TRAFFICSIM_MAX_IMPORT_KM2", "6"))
 OSM_LICENSE = "© OpenStreetMap contributors (ODbL). Traffic generated randomly by SUMO randomTrips."
 DEFAULT_TRIPS_PER_KM = 150     # trips per hour per km of road; a moderate default the user can change
@@ -69,13 +75,20 @@ def fetch_osm_bbox(bbox, dest: Path) -> Path:
         raise ImportError_(f"The area is {a:.1f} km²; the limit is {MAX_AREA_KM2:g} km². Zoom in and try again.")
     q = f'[out:xml][timeout:90];(way["highway"]({s},{w},{n},{e});>;);out body;'
     body = urllib.parse.urlencode({"data": q}).encode()
-    busy, last = False, None
+    busy, last, tried = False, None, []
+    deadline = time.monotonic() + OVERPASS_BUDGET_S
     for url in OVERPASS_URLS:
-        for wait in (0, 3, 8):            # back off while the server says it is at capacity
+        for wait in BUSY_WAITS:           # back off while the server says it is at capacity
+            if time.monotonic() + wait >= deadline:
+                break
             time.sleep(wait)
+            host = urllib.parse.urlsplit(url).hostname
+            if host not in tried:
+                tried.append(host)
             req = urllib.request.Request(url, data=body, headers={"User-Agent": "Junction traffic simulator"})
             try:
-                with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+                left = max(1.0, min(OVERPASS_TIMEOUT_S, deadline - time.monotonic()))
+                with urllib.request.urlopen(req, timeout=left) as r, open(dest, "wb") as f:
                     shutil.copyfileobj(r, f)
                 if _done(dest):
                     return _check_roads(dest)
@@ -92,8 +105,9 @@ def fetch_osm_bbox(bbox, dest: Path) -> Path:
     if busy:
         raise ImportError_("OpenStreetMap's download service (Overpass API) is busy right now. "
                            "Try again in a few minutes, or download an .osm file and upload it instead.")
-    raise ImportError_(f"Could not download from OpenStreetMap (Overpass API): {last}. "
-                       "Check the internet connection, or download an .osm file and upload it instead.")
+    raise ImportError_(f"OpenStreetMap's download servers did not answer in time ({', '.join(tried)}; last: {last}). "
+                       "They are public and sometimes overloaded: try again in a few minutes, or download an "
+                       ".osm file (openstreetmap.org → Export) and upload it instead.")
 
 
 def _check_roads(dest: Path) -> Path:
