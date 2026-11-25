@@ -31,6 +31,9 @@ def test_documents_and_logs():
     assert dict(d.items(f"tst_{k}", "status.json")) == {"one": {"s": 1}, "two": {"s": 2}}
     g = d.group(f"tst_{k}")
     assert g["one"] == {"status.json": {"s": 1}, "config.json": {"c": 1}} and "deep.json" not in g.get("two", {})
+    only = d.group(f"tst_{k}", ("status.json",))              # named documents only, same shape
+    assert isinstance(only, dict) and only == {"one": {"status.json": {"s": 1}}, "two": {"status.json": {"s": 2}}}
+    assert d.group(f"tst_{k}", ("missing.json",)) == {}
     d.write(f"tst_{k}/list.json", [1, 2, 3])
     assert d.read(f"tst_{k}/list.json") == [1, 2, 3]
     d.delete_prefix(f"tst_{k}/one")

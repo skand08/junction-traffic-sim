@@ -26,6 +26,7 @@ from .jobs import Cancelled, run_seed_subprocess, versions
 
 BENCH_DIR = config.WORKSPACE_DIR / "research" / "benchmarks"
 DOCS = "research/benchmarks"
+LIST_DOCS = ("config.json", "manifest.json", "status.json")     # what lists need; results.json can be megabytes
 
 # measures reported by benchmarks: key -> (label, unit, lower is better)
 MEASURES = {
@@ -86,7 +87,7 @@ class BenchmarkManager:
         self.detached: set = set()           # handed back to the queue by a stopping worker: write nothing more
         self.lock = threading.Lock()
         if not store.SHARED:                     # one machine: anything still "running" was cut off by a restart
-            for bid, docs in store.docs.group(DOCS).items():
+            for bid, docs in store.docs.group(DOCS, ("status.json",)).items():
                 if (docs.get("status.json") or {}).get("state") in ("running", "queued"):
                     self._status(bid, state="interrupted")
 
@@ -115,8 +116,8 @@ class BenchmarkManager:
 
     def list(self) -> list:
         out = []
-        for bid, docs in store.docs.group(DOCS).items():
-            if all(n in docs for n in ("config.json", "manifest.json", "status.json")):
+        for bid, docs in store.docs.group(DOCS, LIST_DOCS).items():
+            if all(n in docs for n in LIST_DOCS):
                 out.append(self._info(bid, docs))
         return sorted(out, key=lambda b: b["status"].get("created") or 0, reverse=True)
 
