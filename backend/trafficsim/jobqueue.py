@@ -138,6 +138,15 @@ def live_idle_s(sid: str) -> Optional[float]:
     return float(r[0]) if r else None
 
 
+def live_purge(older_than_s: int) -> list:
+    """Remove live sessions that ended and have not been looked at for a while; returns their ids."""
+    with db.conn() as c:
+        rows = c.execute("DELETE FROM live_frames f WHERE f.last_seen < now() - make_interval(secs => %s) "
+                         "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = f.session AND j.state IN ('queued', 'running')) "
+                         "RETURNING session", (older_than_s,)).fetchall()
+    return [r[0] for r in rows]
+
+
 def live_close(sid: str):
     with db.conn() as c:
         c.execute("DELETE FROM live_frames WHERE session = %s", (sid,))

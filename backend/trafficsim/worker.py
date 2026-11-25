@@ -36,6 +36,7 @@ IDLE_POLL_S = float(os.environ.get("JUNCTION_WORKER_IDLE_POLL_S", "10"))  # afte
 DRAIN_S = float(os.environ.get("JUNCTION_WORKER_DRAIN_S", "240"))
 HEARTBEAT_S, STALE_S, REAP_S = 15, 120, 60
 LIVE_IDLE_S = float(os.environ.get("JUNCTION_LIVE_IDLE_S", "300"))     # end a live session nobody watches
+LIVE_KEEP_S = 86400                     # an ended session nobody closed stays readable this long
 
 
 def log(*a):
@@ -82,8 +83,12 @@ class LiveRunner:
             if time.monotonic() - checked > 10:
                 checked = time.monotonic()
                 idle = jobqueue.live_idle_s(sid)
-                if idle is None or idle > LIVE_IDLE_S:      # closed by the API, or nobody watching
+                if idle is None:                            # ended by the user: the API removed it
+                    break
+                if idle > LIVE_IDLE_S:                      # nobody watching: say so where the app looks
                     log("live session idle, stopping", sid)
+                    jobqueue.live_publish(sid, run, frame, f"The live view stopped because nobody watched it for "
+                                          f"{round(LIVE_IDLE_S / 60)} minutes. Start it again.")
                     break
         self.stop(sid)
 
@@ -198,8 +203,7 @@ class Worker:
                 log("end", kind, jid, state)
                 jobqueue.finish(jid, state)
                 self.mine.pop(jid, None)
-                if kind == "live":
-                    jobqueue.live_close(jid)
+                # a live session's row is kept: it holds why it ended, and the API removes it when the user ends it
 
     def commands(self):
         for jid, cmds in jobqueue.take_commands(self.name).items():
@@ -215,6 +219,8 @@ class Worker:
         for kind, jid in jobqueue.reap(STALE_S):
             log("interrupted (worker went silent)", kind, jid)
             self._fail(kind, jid, "The worker running this stopped. Start it again.")
+        for sid in jobqueue.live_purge(LIVE_KEEP_S):        # ended sessions nobody closed
+            store.docs.delete(f"live/{sid}.json")
 
     def run(self):
         store.ready()
