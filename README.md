@@ -87,6 +87,18 @@ from the change, not from luck. A result is "consistent" when the proposal wins 
 
 Run the tests with `cd backend && pytest -q`.
 
+## Deployment
+
+Locally the app keeps everything in JSON files and runs jobs itself. For a shared, online deployment, it uses:
+
+- Postgres for data and a job queue;
+- Vercel Blob for files;
+- an always-on worker for simulations;
+- sign-in for your team.
+
+See [DEPLOY.md](DEPLOY.md) for the Vercel setup, environment variables (`.env.example`), CI and scaling.
+`docker compose up --build` runs the same layout on one machine.
+
 ## Flyovers
 
 Select a junction in the Scenario Builder and choose **Build flyover**. The road that goes straight through the

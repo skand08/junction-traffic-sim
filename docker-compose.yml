@@ -1,0 +1,32 @@
+# The deployed layout on one machine: Postgres, the API and a worker, sharing one data volume instead of Blob.
+#   docker compose up --build        then: cd frontend && npm run dev   ->  http://localhost:5173
+#   docker compose exec api python -m trafficsim.auth add you@example.org --admin   (when JUNCTION_SECRET is set)
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: junction, POSTGRES_PASSWORD: junction, POSTGRES_DB: junction }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "junction"], interval: 2s, retries: 30 }
+  api:
+    build: ./backend
+    environment: &env
+      DATABASE_URL: postgresql://junction:junction@db:5432/junction
+      JUNCTION_EXECUTION: queue
+      TRAFFICSIM_DATA: /data
+      JUNCTION_SECRET: ${JUNCTION_SECRET:-}
+      JUNCTION_ADMIN_EMAIL: ${JUNCTION_ADMIN_EMAIL:-}
+      JUNCTION_ADMIN_PASSWORD: ${JUNCTION_ADMIN_PASSWORD:-}
+    volumes: [data:/data]
+    ports: ["8000:80"]
+    depends_on: { db: { condition: service_healthy } }
+  worker:
+    build: ./backend
+    command: ["python", "-m", "trafficsim.worker"]
+    environment: *env
+    volumes: [data:/data]
+    depends_on: { db: { condition: service_healthy } }
+    stop_grace_period: 5m
+volumes:
+  pgdata:
+  data:

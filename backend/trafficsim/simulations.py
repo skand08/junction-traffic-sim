@@ -1,22 +1,17 @@
 """Simulations: one reference scenario and one or more alternatives, all run with the same seeds.
 
-A simulation is stored as WORKSPACE_DIR/simulations/<id>.json and points at one run per scenario
-(runs are the existing per-scenario jobs). Comparisons are always alternative vs reference.
+A simulation is stored as the document "simulations/<id>.json" (store.py) and points at one run per scenario
+(runs are the existing per-scenario jobs). Comparisons are always alternative vs reference. The headline
+numbers of a finished simulation are cached in "simulations/summaries/<id>.json".
 """
-import json
 import time
 import uuid
 
-from . import config
-
-SIM_DIR = config.WORKSPACE_DIR / "simulations"
-SIM_DIR.mkdir(parents=True, exist_ok=True)
+from . import store
 
 
 def save(sim: dict) -> dict:
-    tmp = SIM_DIR / f"{sim['id']}.json.tmp"
-    tmp.write_text(json.dumps(sim, indent=1))
-    tmp.replace(SIM_DIR / f"{sim['id']}.json")
+    store.docs.write(f"simulations/{sim['id']}.json", sim)
     return sim
 
 
@@ -26,18 +21,26 @@ def new(name: str, network: str, reference: dict, alternatives: list, seeds: lis
 
 
 def load(sid: str) -> dict:
-    f = SIM_DIR / f"{sid}.json"
-    if "/" in sid or not f.exists():
+    d = store.docs.read(f"simulations/{sid}.json") if "/" not in sid else None
+    if d is None:
         raise KeyError(f"simulation '{sid}' not found")
-    return json.loads(f.read_text())
+    return d
 
 
 def list_all() -> list:
-    out = [json.loads(f.read_text()) for f in SIM_DIR.glob("*.json")]   # summaries/ is a subfolder, not matched
+    out = [d for _, d in store.docs.items("simulations")]      # summaries/ is a subfolder, not matched
     return sorted(out, key=lambda s: s.get("created", 0), reverse=True)
 
 
+def summary(sid: str):
+    return store.docs.read(f"simulations/summaries/{sid}.json")
+
+
+def save_summary(sid: str, data: dict):
+    store.docs.write(f"simulations/summaries/{sid}.json", data)
+
+
 def delete(sid: str):
-    for f in (SIM_DIR / f"{sid}.json", SIM_DIR / "summaries" / f"{sid}.json"):
-        if f.exists():
-            f.unlink()
+    if "/" not in sid:
+        store.docs.delete(f"simulations/{sid}.json")
+        store.docs.delete(f"simulations/summaries/{sid}.json")

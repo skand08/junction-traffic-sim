@@ -818,3 +818,17 @@ button.stat:hover { border-color: var(--asphalt-2); }
 .fly-form select, .fly-form input[type="number"] { width: 110px; }
 .fly-existing { background: var(--ok-bg); border-radius: var(--radius-s); padding: 8px 10px; margin: 6px 0; }
 .fly-existing p { margin: 0 0 4px; }
+
+/* Sign-in: the guide-sign field fills the page; the form sits on it like a plate */
+.signin { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--sign); }
+.signin-card { width: min(380px, 100%); background: var(--paper); border-radius: var(--radius-m); padding: 28px 28px 22px;
+  box-shadow: 0 0 0 3px var(--sign), 0 0 0 5px rgba(250,251,249,.85); }
+.signin-sign { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: var(--t-l); color: var(--sign); }
+.signin-sign .mark { border-color: var(--sign); }
+.signin-card h1 { font-size: var(--t-xl); margin: 18px 0 4px; }
+.signin-card input { width: 100%; padding: 8px 10px; border: 1px solid var(--asphalt); border-radius: var(--radius-s); background: #fff; }
+.signin-card .primary { margin-top: 8px; }
+.signin-error { color: var(--worse); margin: 4px 0 8px; }
+.bar-user { font-weight: 600; opacity: .9; align-self: center; }
+.bar-btn { color: var(--sign-ink); border-color: rgba(250,251,249,.7); }
+.bar-btn:hover { background: rgba(250,251,249,.12); }

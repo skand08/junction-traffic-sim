@@ -12,7 +12,6 @@ Fit is reported with GEH on hourly flows (GEH < 5 is the usual target for most c
 """
 import csv
 import io
-import json
 import math
 import subprocess
 import sys
@@ -27,10 +26,10 @@ from typing import List, Optional
 import sumolib
 from pydantic import BaseModel, Field
 
-from . import build, config, scenario as sc
+from . import build, config, jobqueue, store, scenario as sc
 
-CAL_DIR = config.WORKSPACE_DIR / "calibrations"
-CAL_DIR.mkdir(parents=True, exist_ok=True)
+CAL_DIR = config.WORKSPACE_DIR / "calibrations"    # working files and the fitted demand.rou.xml (a stored file)
+DOCS = "calibrations"                                 # documents: meta.json, status.json, report.json
 EDGE_COLS = ("edge", "edge_id", "road", "road_id", "id")
 COUNT_COLS = ("count", "vehicles", "veh", "volume", "flow")
 MAX_CANDIDATES = 3000
@@ -87,11 +86,7 @@ def geh(model_h: float, count_h: float) -> float:
 
 
 def _status(d: Path, **kw):
-    f = d / "status.json"
-    s = json.loads(f.read_text()) if f.exists() else {}
-    s.update(kw)
-    (d / "status.tmp").write_text(json.dumps(s))
-    (d / "status.tmp").replace(f)
+    store.docs.merge(f"{DOCS}/{d.name}/status.json", **kw)
 
 
 def _run(cmd: list, what: str, cwd: Path):
@@ -214,7 +209,8 @@ def calibrate(s: sc.Scenario, counts: List[CountRow], d: Path, seed: int = 1):
         warnings=([f"No route reaches {len(unreachable)} counted road(s): {', '.join(unreachable[:5])}."] if unreachable else [])
         + (["The check used fixed-time signals (pressure-based control runs only in simulations)."]
            if s.controller == "max_pressure" else []))
-    (d / "report.json").write_text(json.dumps(report, indent=1))
+    store.files.push(demand)
+    store.docs.write(f"{DOCS}/{d.name}/report.json", report)
     for f in work.iterdir():                       # intermediate files are large; the report and demand stay
         if f.is_file():
             f.unlink(missing_ok=True)
@@ -224,42 +220,61 @@ def calibrate(s: sc.Scenario, counts: List[CountRow], d: Path, seed: int = 1):
 class Manager:
     def __init__(self):
         self.lock = threading.Lock()
+        self.threads: dict = {}
 
     def start(self, s: sc.Scenario, counts: List[CountRow], problems: List[str], seed: int = 1) -> dict:
         cid = uuid.uuid4().hex[:10]
+        store.docs.write(f"{DOCS}/{cid}/meta.json", dict(id=cid, scenario_id=s.id, network=s.base_network, created=time.time(),
+                                                         counts=[c.model_dump() for c in counts], problems=problems, seed=seed))
+        _status(CAL_DIR / cid, state="queued", created=time.time())
+        payload = dict(scenario=s.model_dump(mode="json"))
+        if jobqueue.remote():
+            jobqueue.enqueue("calibrate", cid, payload)
+        else:
+            self.launch(cid, payload)
+        return self.info(cid)
+
+    def launch(self, cid: str, payload: dict):
+        """Run a recorded calibration in a thread of this process (the API in local mode, or a worker)."""
+        meta = store.docs.read(f"{DOCS}/{cid}/meta.json")
+        s = sc.Scenario.model_validate(payload["scenario"])
+        counts = [CountRow(**c) for c in meta["counts"]]
         d = CAL_DIR / cid
-        d.mkdir(parents=True)
-        (d / "meta.json").write_text(json.dumps(dict(id=cid, scenario_id=s.id, network=s.base_network, created=time.time(),
-                                                     counts=[c.model_dump() for c in counts], problems=problems, seed=seed)))
-        _status(d, state="queued", created=time.time())
+        d.mkdir(parents=True, exist_ok=True)
 
         def go():
             try:
                 with self.lock:                      # one at a time: routing and fitting are CPU heavy
-                    calibrate(s, counts, d, seed)
+                    calibrate(s, counts, d, meta.get("seed", 1))
             except Exception as e:  # noqa: BLE001
                 msg = str(e) if isinstance(e, (CalibrationError, build.EditError)) else f"{type(e).__name__}: {e}"
                 _status(d, state="failed", error=msg, finished=time.time())
 
-        threading.Thread(target=go, daemon=True).start()
-        return self.info(cid)
+        t = threading.Thread(target=go, daemon=True)
+        self.threads[cid] = t
+        t.start()
+
+    def running(self, cid: str) -> bool:
+        t = self.threads.get(cid)
+        return bool(t and t.is_alive())
+
+    @staticmethod
+    def _info(docs: dict) -> dict:
+        return dict(docs["meta.json"], status=docs.get("status.json") or {}, report=docs.get("report.json"))
 
     def info(self, cid: str) -> dict:
-        d = CAL_DIR / cid
-        if not (d / "meta.json").exists():
+        meta = store.docs.read(f"{DOCS}/{cid}/meta.json") if "/" not in cid else None
+        if meta is None:
             raise KeyError(f"calibration '{cid}' not found")
-        meta = json.loads((d / "meta.json").read_text())
-        st = json.loads((d / "status.json").read_text())
-        rep = json.loads((d / "report.json").read_text()) if (d / "report.json").exists() else None
-        return dict(meta, status=st, report=rep)
+        return self._info({"meta.json": meta, "status.json": store.docs.read(f"{DOCS}/{cid}/status.json"),
+                           "report.json": store.docs.read(f"{DOCS}/{cid}/report.json")})
 
     def list(self, scenario_id: Optional[str] = None) -> list:
         out = []
-        for d in CAL_DIR.iterdir():
-            try:
-                i = self.info(d.name)
-            except (KeyError, json.JSONDecodeError, FileNotFoundError):
+        for cid, docs in store.docs.group(DOCS).items():
+            if "meta.json" not in docs:
                 continue
+            i = self._info(docs)
             if scenario_id is None or i["scenario_id"] == scenario_id:
                 i.pop("counts", None)
                 out.append(i)
@@ -267,5 +282,8 @@ class Manager:
 
 
 def demand_file(cid: str) -> Optional[Path]:
+    """The fitted demand of a finished calibration, fetched from the file store if this machine lacks it."""
+    if "/" in cid:
+        return None
     f = CAL_DIR / cid / "demand.rou.xml"
-    return f if f.exists() else None
+    return f if store.files.pull(f) else None

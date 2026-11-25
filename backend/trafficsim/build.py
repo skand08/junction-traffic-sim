@@ -288,8 +288,9 @@ def build(s: Scenario, out_dir: Path) -> Build:
     demand = base_dir / "demand.rou.xml"
     bad, total = (0, m.get("trips", 0))
     if s.calibration:                                  # demand fitted to traffic counts (calibrate.py)
-        cal = config.WORKSPACE_DIR / "calibrations" / s.calibration / "demand.rou.xml"
-        if cal.exists():
+        from .calibrate import demand_file
+        cal = demand_file(s.calibration)
+        if cal is not None:
             demand = cal
             total = sum(1 for _ in ET.iterparse(cal) if _[1].tag in ("vehicle", "trip"))
         else:

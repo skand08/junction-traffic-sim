@@ -27,6 +27,9 @@ from pydantic import BaseModel, Field
 from . import config
 from .external import ExternalCfg
 
+LIVE_DIR = config.WORKSPACE_DIR / "live"      # working files of live sessions (built network, routes)
+LIVE_DRAIN_S = 900                            # simulated time after the demand window for trips to finish
+
 # ---------- configuration (what the user picks) ----------
 
 INTENSITY = {"low": 0.6, "medium": 1.0, "high": 1.4}          # multiplies the scenario's own traffic
@@ -121,6 +124,39 @@ def live_demand(base_demand: Path, out: Path, cfg: LiveConfig, begin: float, end
 
 
 # ---------- the SUMO process ----------
+
+class LiveError(ValueError):
+    """The live setup cannot run; the message is shown to the user."""
+
+
+def prepare(s, cfg: "LiveConfig", out: Path, rl_model: Optional[str] = None):
+    """Build the scenario and the live traffic into `out`. Returns (job for _worker, session meta).
+    Raises build.EditError or LiveError. Used by the API and, in queue mode, again by the worker that runs it."""
+    import sumolib
+    from . import build
+    out.mkdir(parents=True, exist_ok=True)
+    b = build.build(s, out)
+    net = sumolib.net.readNet(str(b.net_file))
+    for r in cfg.routes:
+        for e in (r.from_edge, r.to_edge):
+            if not net.hasEdge(e) or not net.getEdge(e).allows("passenger"):
+                raise LiveError(f"Road {e} is not open to cars in this scenario.")
+        path, _ = net.getShortestPath(net.getEdge(r.from_edge), net.getEdge(r.to_edge), vClass="passenger")
+        if path is None:
+            raise LiveError("There is no route for cars between the chosen entry and destination.")
+    window_end = b.begin + cfg.duration_min * 60
+    routes = live_demand(b.demand_file, out, cfg, b.begin, b.end, net)
+    special = cfg.controller in ("rl", "external")
+    job = dict(net_file=str(b.net_file), routes=str(routes), tls_additional=str(b.tls_additional) if b.tls_additional else None,
+               begin=b.begin, window_end=window_end, stop=window_end + LIVE_DRAIN_S,
+               scale=round(INTENSITY[cfg.intensity] * s.demand_scale, 3), seed=cfg.seed,
+               controller=cfg.controller if special else s.controller, rl_model=rl_model,
+               external=cfg.external.model_dump() if cfg.controller == "external" else None, speed=1.0)
+    meta = dict(scenario_name=s.name, network=s.base_network, controller=job["controller"], begin=b.begin,
+                window_end=window_end, stop=window_end + LIVE_DRAIN_S, warnings=b.warnings,
+                net_mtime=b.net_file.stat().st_mtime, net_file=str(b.net_file))
+    return job, meta
+
 
 def _converter(net_file: str):
     """Vectorised net x/y -> lon/lat, the same mapping the map uses (geometry._projector)."""
@@ -424,8 +460,8 @@ class LiveManager:
         self.sessions: Dict[str, Session] = {}
         self.lock = threading.Lock()
 
-    def create(self, cfg: LiveConfig, job: dict, meta: dict) -> Session:
-        s = Session(uuid.uuid4().hex[:10], cfg, job, meta)
+    def create(self, cfg: LiveConfig, job: dict, meta: dict, sid: Optional[str] = None) -> Session:
+        s = Session(sid or uuid.uuid4().hex[:10], cfg, job, meta)
         with self.lock:
             while len(self.sessions) >= self.MAX:
                 old = next(iter(self.sessions))

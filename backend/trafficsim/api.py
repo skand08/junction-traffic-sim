@@ -11,6 +11,7 @@ import json
 import tempfile
 import uuid
 import threading
+import time
 import re
 from pathlib import Path
 from typing import List, Literal, Optional, Union
@@ -21,12 +22,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, build, calibrate, catalog, config, envexport, geometry, external, importer, jobs, live, names, runner, simulations, scenario as sc
+from . import analysis, auth, build, calibrate, catalog, config, envexport, geometry, external, importer, jobqueue, jobs, live, names, runner, simulations, store, scenario as sc
 from .scenario import Edit, Scenario
 
+store.ready()                     # creates the database tables on first start (no-op with local files)
 app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.environ.get("TRAFFICSIM_CORS", "*").split(","),
                    allow_methods=["*"], allow_headers=["*"])
+auth.install(app)                 # sign-in, when JUNCTION_SECRET is set
+auth.bootstrap()
 _jobs: jobs.JobManager | None = None
 _jobs_lock = threading.Lock()
 
@@ -48,6 +52,8 @@ def _nf(e: Exception):
 @app.get("/api/health")
 def health():
     return dict(ok=True, workers=config.MAX_WORKERS, versions=jobs.versions(),
+                storage=dict(documents="postgres" if store.SHARED else "files", files="blob" if store.files.remote else "local",
+                             execution=jobqueue.EXECUTION, queue=jobqueue.depth() if jobqueue.remote() else None),
                 settings=dict(time_to_teleport_s=runner.TELEPORT_S, ignore_junction_blocker_s=runner.JUNCTION_BLOCKER_S, step_length_s=config.STEP_LENGTH,
                               drain_s=config.DRAIN_S, default_seeds=config.DEFAULT_SEEDS))
 
@@ -450,16 +456,12 @@ def list_simulations(network: Optional[str] = None):
     return [_sim_status(s) for s in simulations.list_all() if not network or s["network"] == network]
 
 
-SUMMARY_DIR = simulations.SIM_DIR / "summaries"     # one cached headline per finished simulation
-
-
 def _sim_summary(sim: dict) -> dict:
     """Headline numbers of a finished simulation: per tested scenario, the change in travel time on the
     same trips against the reference. Runs never change once done, so this is computed once and cached."""
-    SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
-    f = SUMMARY_DIR / f"{sim['id']}.json"
-    if f.exists():
-        return json.loads(f.read_text())
+    cached = simulations.summary(sim["id"])
+    if cached is not None:
+        return cached
     ref = jobs.load_run(sim["reference"]["run_id"])
     alts = []
     for a in sim["alternatives"]:
@@ -476,7 +478,7 @@ def _sim_summary(sim: dict) -> dict:
     out = dict(id=sim["id"], alternatives=alts, versions=ref.get("versions"),
                started=ref.get("started"), finished=max([jobs.load_run(a["run_id"]).get("finished") or 0
                                                          for a in sim["alternatives"]] + [ref.get("finished") or 0]))
-    f.write_text(json.dumps(out))
+    simulations.save_summary(sim["id"], out)
     return out
 
 
@@ -593,9 +595,10 @@ def import_bundle(bundle: dict):
 
 
 # ---------- live simulation ----------
+# Local execution: sessions run in this process (LiveManager). Queue execution: a worker runs them; the session
+# is the document "live/<id>.json", frames come from the live_frames table and controls go through the job queue.
 LIVE = live.LiveManager()
-LIVE_DIR = config.WORKSPACE_DIR / "live"
-LIVE_DRAIN_S = 900          # simulated time after the demand window for trips to finish
+LIVE_DIR = live.LIVE_DIR
 
 
 atexit.register(LIVE.stop_all)        # stop SUMO processes with the server
@@ -608,8 +611,19 @@ def _live_info(s: "live.Session") -> dict:
                 error=s.error, t=f.get("t"), run=s.run)
 
 
+def _remote_live_info(doc: dict) -> dict:
+    row = jobqueue.live_frame(doc["id"])
+    run, frame, error = row if row else (0, None, "The live simulation has ended.")
+    job = jobqueue.get(doc["id"])
+    if job and job["state"] == "interrupted" and not error:
+        error = "The live simulation stopped because its worker restarted. Start it again."
+    f = frame or {}
+    return dict(id=doc["id"], config=doc["cfg"], **doc["meta"], state="failed" if error else f.get("state", "starting"),
+                error=error, t=f.get("t"), run=run)
+
+
 @app.post("/api/live")
-def live_start(cfg: live.LiveConfig):
+def live_start(cfg: live.LiveConfig, request: Request):
     s = _get(cfg.scenario_id)
     rl_model = None
     if cfg.controller == "rl":
@@ -627,74 +641,105 @@ def live_start(cfg: live.LiveConfig):
         s = s.model_copy(update=dict(controller="fixed"))
     elif cfg.controller:
         s = s.model_copy(update=dict(controller=cfg.controller))
-    sid_dir = LIVE_DIR / uuid.uuid4().hex[:10]
-    sid_dir.mkdir(parents=True, exist_ok=True)
+    sid = uuid.uuid4().hex[:10]
+    sid_dir = LIVE_DIR / sid
     try:
-        b = build.build(s, sid_dir)
-    except build.EditError as e:
+        job, meta = live.prepare(s, cfg, sid_dir, rl_model)
+    except (build.EditError, live.LiveError) as e:
         raise HTTPException(422, str(e))
-    import sumolib
-    net = sumolib.net.readNet(str(b.net_file))
-    for r in cfg.routes:
-        for e in (r.from_edge, r.to_edge):
-            if not net.hasEdge(e) or not net.getEdge(e).allows("passenger"):
-                raise HTTPException(422, f"Road {e} is not open to cars in this scenario.")
-        path, _ = net.getShortestPath(net.getEdge(r.from_edge), net.getEdge(r.to_edge), vClass="passenger")
-        if path is None:
-            raise HTTPException(422, "There is no route for cars between the chosen entry and destination.")
-    window_end = b.begin + cfg.duration_min * 60
-    routes = live.live_demand(b.demand_file, sid_dir, cfg, b.begin, b.end, net)
-    job = dict(net_file=str(b.net_file), routes=str(routes), tls_additional=str(b.tls_additional) if b.tls_additional else None,
-               begin=b.begin, window_end=window_end, stop=window_end + LIVE_DRAIN_S,
-               scale=round(live.INTENSITY[cfg.intensity] * s.demand_scale, 3), seed=cfg.seed,
-               controller=cfg.controller if cfg.controller in ("rl", "external") else s.controller, rl_model=rl_model,
-               external=cfg.external.model_dump() if cfg.controller == "external" else None, speed=1.0)
-    meta = dict(scenario_name=s.name, network=s.base_network,
-                controller=cfg.controller if cfg.controller in ("rl", "external") else s.controller, begin=b.begin,
-                rl_agent=(_agent_info(cfg.rl_agent)["config"]["name"] if rl_model else None),
-                external=cfg.external.name if cfg.controller == "external" else None,
-                window_end=window_end, stop=window_end + LIVE_DRAIN_S, warnings=b.warnings,
-                net_mtime=b.net_file.stat().st_mtime, net_file=str(b.net_file))
-    sess = LIVE.create(cfg, job, meta)
-    return _live_info(sess)
+    meta.update(rl_agent=(_agent_info(cfg.rl_agent)["config"]["name"] if rl_model else None),
+                external=cfg.external.name if cfg.controller == "external" else None)
+    if not jobqueue.remote():
+        return _live_info(LIVE.create(cfg, job, meta, sid))
+    shutil.rmtree(sid_dir, ignore_errors=True)              # the worker builds its own copy
+    owner = (getattr(request.state, "user", None) or {}).get("email")
+    mine = [i for i in jobqueue.active("live") if (store.docs.read(f"live/{i}.json") or {}).get("owner") == owner]
+    for old in mine[:max(0, len(mine) - live.LiveManager.MAX + 1)]:
+        _remote_live_stop(old)                              # starting another stops this person's oldest
+    doc = dict(id=sid, cfg=cfg.model_dump(mode="json"), scenario=s.model_dump(mode="json"), created=time.time(),
+               owner=owner, meta={k: v for k, v in meta.items() if k not in ("net_file", "net_mtime")})
+    store.docs.write(f"live/{sid}.json", doc)
+    jobqueue.live_open(sid)
+    jobqueue.enqueue("live", sid, {})
+    return _remote_live_info(doc)
 
 
-def _live(sid: str) -> "live.Session":
+def _remote_live_stop(sid: str):
+    if not jobqueue.cancel_queued(sid):
+        jobqueue.command(sid, dict(action="stop"))
+    jobqueue.live_close(sid)
+    store.docs.delete(f"live/{sid}.json")
+
+
+def _live(sid: str):
+    """The session: a live.Session (local execution) or its document (queue execution)."""
+    if jobqueue.remote():
+        doc = store.docs.read(f"live/{sid}.json") if "/" not in sid else None
+        if doc is None:
+            raise HTTPException(404, f"live session '{sid}' not found")
+        return doc
     try:
         return LIVE.get(sid)
     except KeyError as e:
         _nf(e)
 
 
+def _live_net(sess) -> tuple:
+    if isinstance(sess, dict):
+        net = _built_net(Scenario.model_validate(sess["scenario"]))
+        return str(net), net.stat().st_mtime, sess["meta"]["network"], sess["cfg"]["scenario_id"]
+    return sess.meta["net_file"], sess.meta["net_mtime"], sess.meta["network"], sess.cfg.scenario_id
+
+
 @app.get("/api/live/{sid}")
 def live_status(sid: str):
-    return _live_info(_live(sid))
+    s = _live(sid)
+    return _remote_live_info(s) if isinstance(s, dict) else _live_info(s)
 
 
 @app.get("/api/live/{sid}/static")
 def live_static(sid: str):
-    s = _live(sid)
-    return geometry.live_static(s.meta["net_file"], s.meta["net_mtime"])
+    net_file, mtime, _, _ = _live_net(_live(sid))
+    return geometry.live_static(net_file, mtime)
 
 
 @app.get("/api/live/{sid}/geometry")
 def live_geometry(sid: str):
-    s = _live(sid)
-    g = geometry.network_geojson(s.meta["net_file"], s.meta["net_mtime"])
+    net_file, mtime, network, scenario_id = _live_net(_live(sid))
+    g = geometry.network_geojson(net_file, mtime)
     g = dict(g, features=[dict(f, properties=dict(f["properties"])) for f in g["features"]])
-    names.label_edges(g["features"], s.meta["network"])
-    sc_ = sc.load(s.cfg.scenario_id)
+    names.label_edges(g["features"], network)
     edited = {}
-    for e in sc_.edits:
-        for key in ("edge", "from_edge", "node"):
-            if hasattr(e, key):
-                edited.setdefault(getattr(e, key), []).append(e.type)
+    try:
+        for e in sc.load(scenario_id).edits:
+            for key in ("edge", "from_edge", "node"):
+                if hasattr(e, key):
+                    edited.setdefault(getattr(e, key), []).append(e.type)
+    except KeyError:
+        pass
     return dict(g, edited=edited)
 
 
 @app.get("/api/live/{sid}/frame")
 def live_frame(sid: str, after: int = 0):
     s = _live(sid)
+    if isinstance(s, dict):                    # wait up to a second for a newer frame from the worker
+        t_end = time.monotonic() + 1.0
+        while True:
+            peek = jobqueue.live_peek(sid)
+            if peek is None:
+                raise HTTPException(404, f"live session '{sid}' not found")
+            run, seq, error = peek
+            if error:
+                raise HTTPException(500, error)
+            if seq > after or time.monotonic() >= t_end:
+                break
+            time.sleep(0.1)
+        row = jobqueue.live_frame(sid)
+        frame = row[1] if row else None
+        if frame is None:
+            return dict(kind="frame", seq=0, state="starting", run=run)
+        return dict(frame, run=run)
     f = s.wait_frame(after)
     if s.error:
         raise HTTPException(500, s.error)
@@ -712,18 +757,32 @@ class LiveControl(BaseModel):
 @app.post("/api/live/{sid}/control")
 def live_control(sid: str, c: LiveControl):
     s = _live(sid)
+    if c.action == "speed" and c.speed is None:
+        raise HTTPException(422, "Give a speed.")
+    if isinstance(s, dict):
+        before = jobqueue.live_peek(sid)
+        jobqueue.command(sid, c.model_dump(exclude_none=True))
+        if c.action == "reset" and before:          # answer once the worker has restarted it, as in local mode
+            t_end = time.monotonic() + 10
+            while time.monotonic() < t_end:
+                now = jobqueue.live_peek(sid)
+                if not now or now[0] != before[0] or now[2]:
+                    break
+                time.sleep(0.1)
+        return _remote_live_info(s)
     if c.action == "reset":
         s.reset()                 # same settings and seed: the run replays identically
         return _live_info(s)
-    if c.action == "speed" and c.speed is None:
-        raise HTTPException(422, "Give a speed.")
     s.send(c.model_dump(exclude_none=True))
     return _live_info(s)
 
 
 @app.delete("/api/live/{sid}")
 def live_stop(sid: str):
-    LIVE.remove(sid)
+    if jobqueue.remote():
+        _remote_live_stop(sid)
+    else:
+        LIVE.remove(sid)
     return dict(ok=True)
 
 
@@ -760,18 +819,11 @@ def research_defaults():
 
 @app.post("/api/research/agents")
 def train_agent(cfg: rl_train.AgentCfg):
-    s = _get(cfg.scenario_id)
-
-    def prepare(cfg, d):
-        s2 = s.model_copy(update=dict(controller="fixed"))
-        try:
-            b = build.build(s2, d / "build")
-        except build.EditError as e:
-            raise HTTPException(422, str(e))
-        return dict(net_file=str(b.net_file), routes=str(b.demand_file), begin=b.begin, network=s.base_network,
-                    scenario_name=s.name, net_sha=rl_train._sha(str(b.net_file)))
+    _get(cfg.scenario_id)
     try:
-        return TRAIN.create(cfg, prepare)
+        return TRAIN.create(cfg)
+    except build.EditError as e:
+        raise HTTPException(422, str(e))
     except RuntimeError as e:
         raise HTTPException(409, str(e))
 
@@ -828,15 +880,23 @@ def agent_export(aid: str):
     """A zip with everything to reuse or retrain the agent: config, manifest, log (JSONL and CSV), weights."""
     import zipfile, csv as _csv
     info = _agent_info(aid)
-    d = rl_train.AGENTS_DIR / aid
     buf = io.BytesIO()
+    rows = TRAIN.log(aid)
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in ("config.json", "manifest.json", "status.json", "log.jsonl", "final.npz", "best.npz"):
-            if (d / f).exists():
-                z.write(d / f, f)
-        for f in sorted((d / "ckpt").glob("*.npz")) if (d / "ckpt").exists() else []:
-            z.write(f, f"checkpoints/{f.name}")
-        rows = TRAIN.log(aid)
+        for name, key in (("config.json", "config"), ("manifest.json", "manifest"), ("status.json", "status")):
+            z.writestr(name, json.dumps(info[key], indent=1))
+        if rows:
+            z.writestr("log.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
+        for which in ("final", "best"):
+            try:
+                z.write(TRAIN.model_path(aid, which), f"{which}.npz")
+            except KeyError:
+                pass
+        for ck in info["checkpoints"]:
+            try:
+                z.write(TRAIN.model_path(aid, ck), f"checkpoints/{ck}")
+            except KeyError:
+                pass
         if rows:
             sio = io.StringIO()
             cols = list(dict.fromkeys(k for r in rows for k in r))   # evaluation columns appear only on evaluated episodes
@@ -1011,7 +1071,7 @@ def delete_benchmark(bid: str):
     info = _bench(bid)
     if info["status"].get("state") in ("running", "queued"):
         raise HTTPException(409, "Cancel the benchmark before deleting it.")
-    shutil.rmtree(research.BENCH_DIR / bid, ignore_errors=True)
+    BENCH.delete(bid)
     return dict(ok=True)
 
 

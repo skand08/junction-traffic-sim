@@ -1,7 +1,7 @@
 """Scenario model, edit operations and file-based storage.
 
 A scenario = base network + infrastructure edits + demand scale + signal controller.
-Scenarios are stored as JSON in WORKSPACE_DIR/scenarios/<id>.json; the bundle format (§13, 1.7)
+Scenarios are stored as documents "scenarios/<id>.json" (store.py); the bundle format (§13, 1.7)
 is the same JSON plus provenance, so export/import is a plain round trip.
 """
 import json
@@ -11,10 +11,8 @@ from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, store
 
-SCEN_DIR = config.WORKSPACE_DIR / "scenarios"
-SCEN_DIR.mkdir(parents=True, exist_ok=True)
 BUNDLE_VERSION = "0.1"
 
 
@@ -123,24 +121,25 @@ class Scenario(BaseModel):
 
 
 def save(s: Scenario) -> Scenario:
-    (SCEN_DIR / f"{s.id}.json").write_text(s.model_dump_json(indent=2))
+    store.docs.write(f"scenarios/{s.id}.json", s.model_dump(mode="json"))
     return s
 
 
 def load(sid: str) -> Scenario:
-    f = SCEN_DIR / f"{sid}.json"
-    if not f.exists():
+    d = store.docs.read(f"scenarios/{sid}.json") if "/" not in sid else None
+    if d is None:
         raise KeyError(f"scenario '{sid}' not found")
-    return Scenario.model_validate_json(f.read_text())
+    return Scenario.model_validate(d)
 
 
 def list_all() -> list:
-    out = [Scenario.model_validate_json(f.read_text()) for f in SCEN_DIR.glob("*.json")]
+    out = [Scenario.model_validate(d) for _, d in store.docs.items("scenarios")]
     return sorted(out, key=lambda s: s.created, reverse=True)
 
 
 def delete(sid: str):
-    (SCEN_DIR / f"{sid}.json").unlink(missing_ok=True)
+    if "/" not in sid:
+        store.docs.delete(f"scenarios/{sid}.json")
 
 
 def to_bundle(s: Scenario, seeds: list) -> dict:

@@ -4,8 +4,12 @@ Each seed runs as its own Python subprocess (python -m trafficsim.runner job.jso
 thread pool. This avoids multiprocessing pools, which fail on some platforms (e.g. Python 3.14 on
 macOS raises PermissionError in ProcessPoolExecutor), and keeps libsumo runs isolated.
 
-A run is stored in WORKSPACE_DIR/runs/<run_id>/run.json and keeps a snapshot of the scenario,
-so later edits to the scenario never change past results.
+A run is stored as the document "runs/<run_id>/run.json" (store.py) and keeps a snapshot of the scenario,
+so later edits to the scenario never change past results. While it runs, "runs/<run_id>/status.json" holds
+its progress, and "runs/<run_id>/row.json" is the short summary shown in run lists.
+
+With JUNCTION_EXECUTION=queue the API only records and queues a run; a worker (worker.py) runs it with the
+same code and writes the same documents.
 """
 import json
 import os
@@ -17,10 +21,11 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import analysis, build, config, runner
+from . import analysis, build, config, jobqueue, runner, store
 from .scenario import Scenario
 
-RUNS_DIR = config.WORKSPACE_DIR / "runs"
+RUNS_DIR = config.WORKSPACE_DIR / "runs"           # working files of runs (built network, per-seed outputs)
+FINAL = ("done", "failed", "cancelled")
 APP_VERSION = "0.4.0"
 
 
@@ -61,12 +66,18 @@ class JobManager:
         self._cancel: dict = {}      # job id -> Event set only when the user cancels
         self._halt: dict = {}        # job id -> Event that stops remaining seeds (cancel or a failed seed)
         self._procs_of: dict = {}    # job id -> set of running subprocess.Popen
+        self.detached: set = set()   # jobs handed back to the queue by a stopping worker: write nothing more
 
-    def submit(self, s: Scenario, seeds: list, depart_jitter_s: float = 0) -> dict:
-        rid = uuid.uuid4().hex[:10]
+    def submit(self, s: Scenario, seeds: list, depart_jitter_s: float = 0, rid: str | None = None) -> dict:
+        rid = rid or uuid.uuid4().hex[:10]
         job = dict(id=rid, run_id=rid, scenario_id=s.id, state="queued", done=0, total=len(seeds),
                    message="Waiting to start", warnings=[], error=None, stage=None, trace=None,
                    created=time.time(), seeds=list(seeds), done_seeds=[])
+        store.docs.write(f"runs/{rid}/status.json", job)
+        if jobqueue.remote():                            # a worker runs it
+            jobqueue.enqueue("run", rid, dict(scenario=s.model_dump(mode="json"), seeds=list(seeds),
+                                              depart_jitter_s=depart_jitter_s))
+            return dict(job)
         with self._lock:
             self.jobs[rid] = job
             self._cancel[rid] = threading.Event()
@@ -79,7 +90,16 @@ class JobManager:
         with self._lock:
             if jid in self.jobs:
                 return dict(self.jobs[jid])
-        run = load_run(jid)        # job from an earlier server session
+        try:
+            run = load_run(jid)        # a finished job, or one from an earlier server session
+        except KeyError:
+            st = store.docs.read(f"runs/{jid}/status.json") if "/" not in jid else None
+            if st is None:
+                raise
+            if st.get("state") not in FINAL and not jobqueue.remote():
+                # recorded as running, but no process here runs it: the server stopped while it ran
+                st.update(state="failed", message="Failed", error="The server stopped while this ran. Run it again.")
+            return st
         return dict(id=jid, run_id=jid, scenario_id=run["scenario"]["id"], state=run["state"],
                     done=len(run.get("seed_results", [])), total=len(run["seeds"]),
                     message="", warnings=run.get("warnings", []), error=run.get("error"),
@@ -88,6 +108,15 @@ class JobManager:
 
     def cancel(self, jid: str) -> dict:
         """Stop a queued or running job: no new seeds start and running SUMO processes are terminated."""
+        if jid not in self.jobs and jobqueue.remote():
+            st = self.status(jid)
+            if st["state"] in FINAL:
+                return st
+            if jobqueue.cancel_queued(jid):
+                store.docs.merge(f"runs/{jid}/status.json", state="cancelled", message="Cancelled")
+            elif jobqueue.command(jid, dict(action="cancel")):
+                store.docs.merge(f"runs/{jid}/status.json", message="Cancelling")
+            return self.status(jid)
         with self._lock:
             if jid not in self.jobs:
                 raise KeyError(f"job '{jid}' is not running in this server session")
@@ -104,6 +133,22 @@ class JobManager:
     def _set(self, rid, **kw):
         with self._lock:
             self.jobs[rid].update(kw)
+            snap = dict(self.jobs[rid])
+        if rid not in self.detached:
+            store.docs.write(f"runs/{rid}/status.json", snap)
+
+    def detach(self, rid: str):
+        """Stop a run without recording an outcome (a stopping worker gives it back to the queue)."""
+        self.detached.add(rid)
+        self._halt.get(rid, threading.Event()).set()
+        with self._lock:
+            procs = list(self._procs_of.get(rid, ()))
+        for p in procs:
+            _terminate(p)
+
+    def running(self, jid: str) -> bool:
+        with self._lock:
+            return jid in self.jobs and self.jobs[jid]["state"] not in FINAL
 
     def _run(self, rid: str, s: Scenario, seeds: list, depart_jitter_s: float = 0):
         out = RUNS_DIR / rid
@@ -173,9 +218,10 @@ class JobManager:
                 final = dict(state="failed", error=f"Simulation error: {e}", message="Failed", stage=stage,
                              trace=_tail(tb))
         # write results before announcing the final state, so a client that sees "done" can read them
-        tmp = out / "run.json.tmp"
-        tmp.write_text(json.dumps(record))
-        tmp.replace(out / "run.json")
+        if rid in self.detached:
+            return
+        store.docs.write(f"runs/{rid}/run.json", record)
+        store.docs.write(f"runs/{rid}/row.json", run_row(record))
         self._set(rid, **final)
 
 
@@ -232,26 +278,32 @@ def run_seed_subprocess(job: dict, stop: "threading.Event | None" = None, regist
 
 
 def load_run(rid: str) -> dict:
-    f = RUNS_DIR / rid / "run.json"
-    if not f.exists():
+    r = store.docs.read(f"runs/{rid}/run.json") if "/" not in rid else None
+    if r is None:
         raise KeyError(f"run '{rid}' not found or still running")
-    return json.loads(f.read_text())
+    return r
+
+
+def run_row(r: dict) -> dict:
+    """The short form of a finished run shown in lists."""
+    agg = r.get("aggregate", {}).get("kpis", {})
+    return dict(id=r["id"], scenario_id=r["scenario"]["id"], scenario_name=r["scenario"]["name"],
+                base_network=r["scenario"]["base_network"], controller=r["scenario"]["controller"],
+                parent_id=r["scenario"].get("parent_id"), error=r.get("error"), stage=r.get("stage"),
+                demand_scale=r["scenario"]["demand_scale"], edits=len(r["scenario"]["edits"]),
+                state=r["state"], seeds=r["seeds"], started=r.get("started"),
+                depart_jitter_s=r.get("depart_jitter_s", 0),
+                finished=r.get("finished"), versions=r.get("versions"),
+                teleports=agg.get("teleports", {}).get("mean"),
+                mean_travel_time_s=agg.get("mean_travel_time_s", {}).get("mean"))
 
 
 def list_runs(scenario_id: str | None = None) -> list:
-    out = []
-    for f in RUNS_DIR.glob("*/run.json"):
-        r = json.loads(f.read_text())
-        if scenario_id and r["scenario"]["id"] != scenario_id:
-            continue
-        agg = r.get("aggregate", {}).get("kpis", {})
-        out.append(dict(id=r["id"], scenario_id=r["scenario"]["id"], scenario_name=r["scenario"]["name"],
-                        base_network=r["scenario"]["base_network"], controller=r["scenario"]["controller"],
-                        parent_id=r["scenario"].get("parent_id"), error=r.get("error"), stage=r.get("stage"),
-                        demand_scale=r["scenario"]["demand_scale"], edits=len(r["scenario"]["edits"]),
-                        state=r["state"], seeds=r["seeds"], started=r.get("started"),
-                        depart_jitter_s=r.get("depart_jitter_s", 0),
-                        finished=r.get("finished"), versions=r.get("versions"),
-                        teleports=agg.get("teleports", {}).get("mean"),
-                        mean_travel_time_s=agg.get("mean_travel_time_s", {}).get("mean")))
+    rows = {rid: row for rid, row in store.docs.items("runs", "row.json")}
+    if not store.SHARED:                     # runs finished before row.json existed
+        for rid, r in store.docs.items("runs", "run.json"):
+            if rid not in rows:
+                rows[rid] = run_row(r)
+                store.docs.write(f"runs/{rid}/row.json", rows[rid])
+    out = [r for r in rows.values() if not scenario_id or r["scenario_id"] == scenario_id]
     return sorted(out, key=lambda r: r.get("started") or 0, reverse=True)
