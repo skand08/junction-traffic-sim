@@ -137,6 +137,15 @@ def test_job_queue_claims_once_and_carries_commands():
     assert (kind, f"{k}_2") in jobqueue.reap(120)
     jobqueue.requeue(f"{k}_1")
     assert [j for j, _ in jobqueue.claim("wc", kind, 5)] == [f"{k}_1"]
+    # ended live sessions are kept (they hold why they ended) and purged only when old and not running
+    jobqueue.live_open(f"{k}_old"); jobqueue.live_open(f"{k}_new"); jobqueue.live_open(f"{k}_run")
+    jobqueue.enqueue(kind, f"{k}_run", {})
+    with db.conn() as c:
+        c.execute("UPDATE live_frames SET last_seen = now() - interval '2 days' WHERE session IN (%s, %s)",
+                  (f"{k}_old", f"{k}_run"))
+    assert jobqueue.live_purge(86400) == [f"{k}_old"]
+    assert jobqueue.live_peek(f"{k}_new") is not None and jobqueue.live_peek(f"{k}_run") is not None
+    jobqueue.live_close(f"{k}_new"); jobqueue.live_close(f"{k}_run")
     with db.conn() as c:
         c.execute("DELETE FROM jobs WHERE kind = %s", (kind,))
 
