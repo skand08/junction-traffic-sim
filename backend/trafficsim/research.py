@@ -4,12 +4,13 @@ A benchmark runs every combination of scenario (the main one and any held-out on
 controller, each on the same seeds and the same start-time variation, so every comparison is paired. All
 numbers come from the SUMO runs; nothing is estimated.
 
-Stored in WORKSPACE/research/benchmarks/<id>/: config.json, manifest.json, status.json, results.json.
+Stored as documents "research/benchmarks/<id>/{config,manifest,status,results}.json" (store.py); the built
+networks and per-run SUMO outputs are working files under WORKSPACE/research/benchmarks/<id>/runs/.
+With JUNCTION_EXECUTION=queue a worker runs the benchmark (worker.py).
 """
 import csv
 import hashlib
 import io
-import json
 import threading
 import time
 import uuid
@@ -19,12 +20,12 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from . import analysis, build, config, scenario as sc
+from . import analysis, build, config, jobqueue, store, scenario as sc
 from .external import ExternalCfg, check_url
 from .jobs import Cancelled, run_seed_subprocess, versions
 
 BENCH_DIR = config.WORKSPACE_DIR / "research" / "benchmarks"
-BENCH_DIR.mkdir(parents=True, exist_ok=True)
+DOCS = "research/benchmarks"
 
 # measures reported by benchmarks: key -> (label, unit, lower is better)
 MEASURES = {
@@ -81,44 +82,52 @@ class BenchmarkManager:
         self.model_path, self.agent_info = model_path, agent_info
         self.pool = ThreadPoolExecutor(max_workers=max(1, workers))
         self.stop: dict = {}
+        self.threads: dict = {}
+        self.detached: set = set()           # handed back to the queue by a stopping worker: write nothing more
         self.lock = threading.Lock()
-        for d in BENCH_DIR.iterdir():
-            st = d / "status.json"
-            if st.exists() and json.loads(st.read_text()).get("state") in ("running", "queued"):
-                self._status(d.name, state="interrupted")
+        if not store.SHARED:                     # one machine: anything still "running" was cut off by a restart
+            for bid, docs in store.docs.group(DOCS).items():
+                if (docs.get("status.json") or {}).get("state") in ("running", "queued"):
+                    self._status(bid, state="interrupted")
 
     # ---------- storage ----------
     def _dir(self, bid: str) -> Path:
-        d = BENCH_DIR / bid
-        if "/" in bid or not (d / "config.json").exists():
+        if "/" in bid or store.docs.read(f"{DOCS}/{bid}/config.json") is None:
             raise KeyError(f"benchmark '{bid}' not found")
-        return d
+        return BENCH_DIR / bid
 
     def _status(self, bid: str, **kw):
-        f = BENCH_DIR / bid / "status.json"
-        s = json.loads(f.read_text()) if f.exists() else {}
-        s.update(kw)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(s))
-        tmp.replace(f)
+        if bid not in self.detached:
+            store.docs.merge(f"{DOCS}/{bid}/status.json", **kw)
+
+    def detach(self, bid: str):
+        self.detached.add(bid)
+        if bid in self.stop:
+            self.stop[bid].set()
+
+    @staticmethod
+    def _info(bid: str, docs: dict) -> dict:
+        return dict(id=bid, config=docs["config.json"], manifest=docs["manifest.json"], status=docs["status.json"])
 
     def info(self, bid: str) -> dict:
-        d = self._dir(bid)
-        return dict(id=bid, config=json.loads((d / "config.json").read_text()),
-                    manifest=json.loads((d / "manifest.json").read_text()), status=json.loads((d / "status.json").read_text()))
+        self._dir(bid)
+        return self._info(bid, {n: store.docs.read(f"{DOCS}/{bid}/{n}") for n in ("config.json", "manifest.json", "status.json")})
 
     def list(self) -> list:
         out = []
-        for d in sorted(BENCH_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                out.append(self.info(d.name))
-            except (KeyError, FileNotFoundError, json.JSONDecodeError):
-                continue
-        return out
+        for bid, docs in store.docs.group(DOCS).items():
+            if all(n in docs for n in ("config.json", "manifest.json", "status.json")):
+                out.append(self._info(bid, docs))
+        return sorted(out, key=lambda b: b["status"].get("created") or 0, reverse=True)
 
     def results(self, bid: str) -> list:
-        f = self._dir(bid) / "results.json"
-        return json.loads(f.read_text()) if f.exists() else []
+        self._dir(bid)
+        return store.docs.read(f"{DOCS}/{bid}/results.json") or []
+
+    def delete(self, bid: str):
+        self._dir(bid)
+        store.docs.delete_prefix(f"{DOCS}/{bid}")
+        store.files.remove(BENCH_DIR / bid)
 
     # ---------- running ----------
     def create(self, cfg: BenchCfg) -> dict:
@@ -143,9 +152,7 @@ class BenchmarkManager:
         if not 0 <= cfg.reference < len(cfg.controllers):
             raise ValueError("The reference must be one of the controllers.")
         bid = uuid.uuid4().hex[:10]
-        d = BENCH_DIR / bid
-        d.mkdir(parents=True)
-        (d / "config.json").write_text(cfg.model_dump_json(indent=1))
+        store.docs.write(f"{DOCS}/{bid}/config.json", cfg.model_dump(mode="json"))
         labels = [_label(c, names) for c in cfg.controllers]
         seeds = list(range(cfg.first_seed, cfg.first_seed + cfg.seeds))
         manifest = dict(id=bid, created=time.time(), versions=versions(), seeds=seeds, labels=labels,
@@ -154,19 +161,41 @@ class BenchmarkManager:
                         models=models, depart_jitter_s=cfg.depart_jitter_s,
                         external=[dict(label=labels[i], **c.external.model_dump()) for i, c in enumerate(cfg.controllers)
                                   if c.kind == "external"])
-        (d / "manifest.json").write_text(json.dumps(manifest, indent=1))
+        store.docs.write(f"{DOCS}/{bid}/manifest.json", manifest)
         total = len(scen) * len(cfg.demand_levels) * len(cfg.controllers) * len(seeds)
         self._status(bid, state="queued", done=0, total=total, created=time.time())
-        self.stop[bid] = threading.Event()
-        threading.Thread(target=self._run, args=(bid, cfg, scen, labels, seeds), daemon=True).start()
+        payload = dict(scenarios=[s.model_dump(mode="json") for s in scen], labels=labels, seeds=seeds)
+        if jobqueue.remote():
+            jobqueue.enqueue("bench", bid, payload)
+        else:
+            self.launch(bid, payload)
         return self.info(bid)
+
+    def launch(self, bid: str, payload: dict):
+        """Start a recorded benchmark in this process (the API in local mode, or a worker)."""
+        cfg = BenchCfg(**store.docs.read(f"{DOCS}/{bid}/config.json"))
+        scen = [sc.Scenario.model_validate(x) for x in payload["scenarios"]]
+        self.stop[bid] = threading.Event()
+        t = threading.Thread(target=self._run, args=(bid, cfg, scen, payload["labels"], payload["seeds"]), daemon=True)
+        self.threads[bid] = t
+        t.start()
+
+    def running(self, bid: str) -> bool:
+        t = self.threads.get(bid)
+        return bool(t and t.is_alive())
 
     def cancel(self, bid: str):
         if bid in self.stop:
             self.stop[bid].set()
+        elif jobqueue.remote():
+            if jobqueue.cancel_queued(bid):
+                self._status(bid, state="cancelled", finished=time.time())
+            else:
+                jobqueue.command(bid, dict(action="cancel"))
 
     def _run(self, bid: str, cfg: BenchCfg, scen: list, labels: list, seeds: list):
         d = BENCH_DIR / bid
+        d.mkdir(parents=True, exist_ok=True)
         stop = self.stop[bid]
         cells, futs = [], {}
         registry, lock = set(), threading.Lock()
@@ -218,11 +247,11 @@ class BenchmarkManager:
             self._status(bid, state="failed", error=f"{type(e).__name__}: {e}")
 
     def _save(self, d: Path, cells: list):
+        if d.name in self.detached:
+            return
         for c in cells:
             c["seed_results"].sort(key=lambda r: r["seed"])
-        tmp = d / "results.json.tmp"
-        tmp.write_text(json.dumps(cells))
-        tmp.replace(d / "results.json")
+        store.docs.write(f"{DOCS}/{d.name}/results.json", cells)
 
     # ---------- analysis ----------
     def stats(self, bid: str) -> dict:

@@ -14,7 +14,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import config
+from . import config, store
 
 RESCO_DIR = Path(os.environ.get(
     "TRAFFICSIM_RESCO_DIR", config.DATA_DIR / "resco" / "resco_benchmark" / "environments"))
@@ -85,8 +85,12 @@ def ensure_network(nid: str) -> Path:
     """Return the prepared directory for a base network, building it if needed."""
     if nid not in SPECS:
         user = config.NETWORKS_DIR / nid
-        if "/" not in nid and ".." not in nid and (user / "meta.json").exists():
-            return user                      # an imported network
+        if "/" not in nid and ".." not in nid:
+            if (user / "meta.json").exists():
+                return user                      # an imported network
+            if store.SHARED and store.docs.read(f"networks/{nid}.json") and store.files.pull_dir(user) \
+                    and (user / "meta.json").exists():
+                return user                      # imported on another machine: fetched from the file store
         raise KeyError(f"unknown network '{nid}'")
     out = config.NETWORKS_DIR / nid
     meta_f = out / "meta.json"
@@ -127,6 +131,9 @@ def list_networks() -> list:
         out.append(dict(json.loads(m.read_text()), name=spec["name"], description=spec["description"], note=spec.get("note", "")) if m.exists()
                    else dict(id=nid, name=spec["name"], description=spec["description"], note=spec.get("note", ""), kind=spec["kind"],
                              prepared=False))
+    if store.SHARED:                             # imported networks are listed in the database
+        user = [m for nid, m in store.docs.items("networks") if nid not in SPECS]
+        return out + sorted(user, key=lambda m: m.get("created") or 0)
     for m in sorted(config.NETWORKS_DIR.glob("*/meta.json"), key=lambda f: f.stat().st_mtime):
         if m.parent.name not in SPECS:
             out.append(json.loads(m.read_text()))

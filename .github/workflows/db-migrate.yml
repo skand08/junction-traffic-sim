@@ -1,0 +1,23 @@
+# Apply database migrations by hand (the API and worker also apply them on start).
+# Needs the repository secret PRODUCTION_DATABASE_URL (Neon: use the direct, unpooled connection string).
+name: Database migrate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install "psycopg[binary]>=3.2" "psycopg-pool>=3.2"
+      - name: Migrate
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: python -m trafficsim.db migrate

@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from . import catalog, config
+from . import catalog, config, store
 
 # Public Overpass servers, tried in order; set TRAFFICSIM_OVERPASS to use your own (comma-separated).
 OVERPASS_URLS = [u.strip() for u in os.environ.get(
@@ -148,6 +148,9 @@ def _finish(nid, out: Path, name, description, source, license_, note, geo=True)
     if meta["edges"] == 0:
         raise ImportError_("No drivable roads were found in this data.")
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    store.files.push(out)
+    if store.SHARED:
+        store.docs.write(f"networks/{nid}.json", meta)
     return meta
 
 
@@ -196,6 +199,9 @@ def delete_network(nid: str):
     if nid in catalog.SPECS:
         raise ImportError_("Built-in networks cannot be deleted.")
     d = config.NETWORKS_DIR / nid
-    if "/" in nid or ".." in nid or not (d / "meta.json").exists():
+    if "/" in nid or ".." in nid:
         raise KeyError(f"network '{nid}' not found")
-    shutil.rmtree(d)
+    catalog.ensure_network(nid)                  # KeyError if it does not exist anywhere
+    if store.SHARED:
+        store.docs.delete(f"networks/{nid}.json")
+    store.files.remove(d)

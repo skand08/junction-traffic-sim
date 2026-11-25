@@ -1,17 +1,17 @@
 """Training jobs: configuration, the episode loop (in its own process), and the store of trained agents.
 
-Each agent lives in WORKSPACE/research/agents/<id>/:
-  config.json     everything needed to train it again (scenario, algorithm, hyperparameters, seeds)
-  manifest.json   software versions, network file hash, seeds used per episode
-  log.jsonl       one line per episode: reward, travel time, throughput, teleports, loss, exploration
-  status.json     state and progress
-  ckpt/ep_NNNN.npz, best.npz, final.npz   network weights (+ the metadata needed to use them)
+Each agent is stored under "research/agents/<id>/" (store.py):
+  config.json     document: everything needed to train it again (scenario, algorithm, hyperparameters, seeds)
+  manifest.json   document: software versions, network file hash, seeds used per episode
+  status.json     document: state and progress (also the list of checkpoints)
+  log.jsonl       log: one row per episode: reward, travel time, throughput, teleports, loss, exploration
+  ckpt/ep_NNNN.npz, best.npz, final.npz   files: network weights (+ the metadata needed to use them),
+                  under WORKSPACE/research/agents/<id>/ and mirrored to the file store
+With JUNCTION_EXECUTION=queue the API records and queues a training; a worker runs it (worker.py).
 """
 import hashlib
-import json
 import os
 import multiprocessing as mp
-import shutil
 import threading
 import time
 import uuid
@@ -21,10 +21,11 @@ from typing import List, Literal, Optional
 import numpy as np
 from pydantic import BaseModel, Field
 
-from .. import config
+from .. import config, jobqueue, store
 
 AGENTS_DIR = config.WORKSPACE_DIR / "research" / "agents"
-AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+DOCS = "research/agents"
+MAX_TRAININGS = int(os.environ.get("JUNCTION_MAX_TRAININGS", "2"))    # at once, across all workers
 
 
 class ObsCfg(BaseModel):
@@ -214,12 +215,24 @@ def _alive(pid) -> bool:
 
 
 def _write_status(d: Path, **kw):
-    f = d / "status.json"
-    s = json.loads(f.read_text()) if f.exists() else {}
-    s.update(kw)
-    tmp = d / "status.json.tmp"
-    tmp.write_text(json.dumps(s))
-    tmp.replace(f)
+    store.docs.merge(f"{DOCS}/{d.name}/status.json", **kw)
+
+
+def _saved(d: Path, *files: Path):
+    """Mirror new model files to the file store and list what exists, so another machine can find them."""
+    for f in files:
+        store.files.push(f)
+    ck = sorted(f.name for f in (d / "ckpt").glob("*.npz")) if (d / "ckpt").exists() else []
+    _write_status(d, checkpoints=ck, has_model=(d / "final.npz").exists(), has_best=(d / "best.npz").exists())
+
+
+def prepare(cfg: "AgentCfg", d: Path) -> dict:
+    """Build the scenario's network for training (fixed timing: the agent replaces the signal plans)."""
+    from .. import build, scenario as sc
+    s = sc.load(cfg.scenario_id)
+    b = build.build(s.model_copy(update=dict(controller="fixed")), d / "build")
+    return dict(net_file=str(b.net_file), routes=str(b.demand_file), begin=b.begin, network=s.base_network,
+                scenario_name=s.name, net_sha=_sha(str(b.net_file)))
 
 
 def train_worker(job: dict, conn):
@@ -302,25 +315,29 @@ def train_worker(job: dict, conn):
                 _write_status(d, state="evaluating", episode=ep)
                 ev = _evaluate(ls, job, cfg, learners, reach_cache)
                 row.update(eval_travel_time_s=ev["travel_time_s"], eval_reward=ev["reward"], eval_arrived=ev["arrived"])
-            with open(d / "log.jsonl", "a") as f:
-                f.write(json.dumps(row) + "\n")
+            store.logs.append(f"{DOCS}/{d.name}/log.jsonl", row)
             arrays = learners.state()
+            new_files = [d / "final.npz"]
             ck = (ep + 1) % tr["checkpoint_every"] == 0 or ep + 1 == tr["episodes"]
             if ck:
                 (d / "ckpt").mkdir(exist_ok=True)
                 save(d / "ckpt" / f"ep_{ep + 1:04d}.npz", arrays, dict(meta, episode=ep + 1))
+                new_files.append(d / "ckpt" / f"ep_{ep + 1:04d}.npz")
             if eval_every:                                # best = lowest travel time on the fixed evaluation traffic
                 if evaluated and row["eval_travel_time_s"] is not None and (eval_best is None or row["eval_travel_time_s"] < eval_best):
                     eval_best, since_best = row["eval_travel_time_s"], 0
                     save(d / "best.npz", arrays, dict(meta, episode=ep + 1, eval_travel_time_s=eval_best))
+                    new_files.append(d / "best.npz")
                     _write_status(d, best_episode=ep + 1, best_eval_travel_time_s=round(eval_best, 2))
                 elif evaluated:
                     since_best += 1
             elif m["reward_sum"] > best:
                 best = m["reward_sum"]
                 save(d / "best.npz", arrays, dict(meta, episode=ep + 1))
+                new_files.append(d / "best.npz")
                 _write_status(d, best_episode=ep + 1)
             save(d / "final.npz", arrays, dict(meta, episode=ep + 1))
+            _saved(d, *new_files)
             _write_status(d, episodes_done=ep + 1)
             conn.send(dict(kind="episode", row=row))
             patience = int(tr.get("early_stop_patience") or 0)
@@ -339,41 +356,60 @@ def train_worker(job: dict, conn):
 
 
 class TrainingManager:
-    """Runs training jobs (one process each) and keeps their state on disk."""
+    """Runs training jobs (one process each); their state is kept in the store."""
 
-    def __init__(self, max_jobs: int = 2):
+    def __init__(self, max_jobs: int = MAX_TRAININGS):
         self.procs: dict = {}
         self.conns: dict = {}
         self.lock = threading.Lock()
         self.max_jobs = max_jobs
-        for d in AGENTS_DIR.iterdir() if AGENTS_DIR.exists() else []:   # jobs cut off by a server restart
-            st = d / "status.json"
-            if st.exists():
-                s = json.loads(st.read_text())
-                if s.get("state") in ("running", "paused", "queued", "evaluating") and not _alive(s.get("pid")):
-                    _write_status(d, state="interrupted")
+        if not store.SHARED:                       # one machine: jobs cut off by a server restart
+            for aid, docs in store.docs.group(DOCS).items():
+                st = docs.get("status.json") or {}
+                if st.get("state") in ("running", "paused", "queued", "evaluating") and not _alive(st.get("pid")):
+                    _write_status(AGENTS_DIR / aid, state="interrupted")
 
-    def create(self, cfg: AgentCfg, prepare) -> dict:
-        """prepare(cfg) -> job dict with net_file, routes, begin, network (built by the API)."""
+    def _active(self) -> int:
+        if jobqueue.remote():
+            return len(jobqueue.active("train"))
         with self.lock:
-            live = [k for k, p in self.procs.items() if p.is_alive()]
-            if len(live) >= self.max_jobs:
-                raise RuntimeError(f"{len(live)} trainings are already running; wait for one to finish or stop it.")
+            return sum(p.is_alive() for p in self.procs.values())
+
+    def create(self, cfg: AgentCfg) -> dict:
+        """Record a training and start it (here, or on a worker). Raises build.EditError for invalid scenarios."""
+        n = self._active()
+        if n >= self.max_jobs:
+            raise RuntimeError(f"{n} trainings are already running; wait for one to finish or stop it.")
         aid = uuid.uuid4().hex[:10]
         d = AGENTS_DIR / aid
         d.mkdir(parents=True)
-        job = prepare(cfg, d)
+        job = prepare(cfg, d)                       # also checks the scenario; a worker builds the same network again
         from ..jobs import versions
-        (d / "config.json").write_text(cfg.model_dump_json(indent=1))
+        store.docs.write(f"{DOCS}/{aid}/config.json", cfg.model_dump(mode="json"))
         manifest = dict(id=aid, created=time.time(), versions=versions(), network=job["network"],
                         net_sha=job["net_sha"], scenario_id=cfg.scenario_id, scenario_name=job.get("scenario_name"),
                         episode_seeds=[cfg.training.seed * 1000 + e for e in range(cfg.training.episodes)],
                         demand_seed=cfg.training.seed, numerics="NumPy MLP, Adam; float64")
-        (d / "manifest.json").write_text(json.dumps(manifest, indent=1))
-        _write_status(d, state="queued", episode=0, episodes_done=0, episodes=cfg.training.episodes, created=time.time())
-        job.update(dir=str(d), cfg=cfg.model_dump())
-        self._start(aid, job)
+        store.docs.write(f"{DOCS}/{aid}/manifest.json", manifest)
+        _write_status(d, state="queued", episode=0, episodes_done=0, episodes=cfg.training.episodes, created=time.time(),
+                      checkpoints=[], has_model=False, has_best=False)
+        if jobqueue.remote():
+            jobqueue.enqueue("train", aid, {})
+        else:
+            self._start(aid, dict(job, dir=str(d), cfg=cfg.model_dump()))
         return self.info(aid)
+
+    def launch(self, aid: str, payload: Optional[dict] = None):
+        """Start a recorded training in this process (a worker)."""
+        d = AGENTS_DIR / aid
+        d.mkdir(parents=True, exist_ok=True)
+        cfg = AgentCfg(**store.docs.read(f"{DOCS}/{aid}/config.json"))
+        job = prepare(cfg, d)
+        self._start(aid, dict(job, dir=str(d), cfg=cfg.model_dump()))
+
+    def running(self, aid: str) -> bool:
+        p = self.procs.get(aid)
+        return bool(p and p.is_alive())
 
     def _start(self, aid, job):
         ctx = mp.get_context("spawn")
@@ -393,53 +429,65 @@ class TrainingManager:
                 break
 
     def control(self, aid: str, action: str):
+        d = AGENTS_DIR / aid
         conn = self.conns.get(aid)
         p = self.procs.get(aid)
-        if not conn or not p or not p.is_alive():
-            raise KeyError(f"training '{aid}' is not running")
-        conn.send(dict(action=action))
+        if not (conn and p and p.is_alive()):
+            if not jobqueue.remote():
+                raise KeyError(f"training '{aid}' is not running")
+            if action == "stop" and jobqueue.cancel_queued(aid):
+                _write_status(d, state="stopped", finished=time.time())
+                return
+            if not jobqueue.command(aid, dict(action=action)):
+                raise KeyError(f"training '{aid}' is not running")
+        else:
+            conn.send(dict(action=action))
         if action == "pause":
-            _write_status(AGENTS_DIR / aid, state="pausing")
+            _write_status(d, state="pausing")
         if action == "stop":
-            _write_status(AGENTS_DIR / aid, state="stopping")
+            _write_status(d, state="stopping")
+
+    @staticmethod
+    def _info(aid: str, docs: dict, local: bool, alive: bool) -> dict:
+        st = dict(docs["status.json"])
+        if local and st.get("state") in ("running", "paused", "queued", "pausing", "stopping") and not alive:
+            st["state"] = "interrupted"
+        d = AGENTS_DIR / aid
+        ckpts = st.get("checkpoints")
+        if ckpts is None:                            # agents trained before checkpoints were listed in the status
+            ckpts = sorted(f.name for f in (d / "ckpt").glob("*.npz")) if (d / "ckpt").exists() else []
+        return dict(id=aid, config=docs["config.json"], manifest=docs["manifest.json"], status=st, checkpoints=ckpts,
+                    has_model=st.get("has_model", (d / "final.npz").exists()), has_best=st.get("has_best", (d / "best.npz").exists()))
 
     def info(self, aid: str) -> dict:
-        d = AGENTS_DIR / aid
-        if "/" in aid or not (d / "config.json").exists():
+        if "/" in aid:
             raise KeyError(f"agent '{aid}' not found")
-        st = json.loads((d / "status.json").read_text())
-        p = self.procs.get(aid)
-        if st.get("state") in ("running", "paused", "queued", "pausing", "stopping") and not (p and p.is_alive()):
-            st["state"] = "interrupted"
-        cfg = json.loads((d / "config.json").read_text())
-        man = json.loads((d / "manifest.json").read_text())
-        ckpts = sorted(f.name for f in (d / "ckpt").glob("*.npz")) if (d / "ckpt").exists() else []
-        return dict(id=aid, config=cfg, manifest=man, status=st, checkpoints=ckpts,
-                    has_model=(d / "final.npz").exists(), has_best=(d / "best.npz").exists())
+        docs = {n: store.docs.read(f"{DOCS}/{aid}/{n}") for n in ("config.json", "manifest.json", "status.json")}
+        if any(v is None for v in docs.values()):
+            raise KeyError(f"agent '{aid}' not found")
+        return self._info(aid, docs, not store.SHARED, self.running(aid))
 
     def log(self, aid: str) -> list:
-        f = AGENTS_DIR / aid / "log.jsonl"
-        return [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []
+        return store.logs.rows(f"{DOCS}/{aid}/log.jsonl")
 
     def list(self) -> list:
         out = []
-        for d in sorted(AGENTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                out.append(self.info(d.name))
-            except (KeyError, FileNotFoundError, json.JSONDecodeError):
-                continue
-        return out
+        for aid, docs in store.docs.group(DOCS).items():
+            if all(n in docs for n in ("config.json", "manifest.json", "status.json")):
+                out.append(self._info(aid, docs, not store.SHARED, self.running(aid)))
+        return sorted(out, key=lambda a: a["manifest"].get("created") or 0, reverse=True)
 
     def delete(self, aid: str):
-        p = self.procs.get(aid)
-        if p and p.is_alive():
+        if self.running(aid) or (jobqueue.remote() and aid in jobqueue.active("train")):
             raise RuntimeError("Stop the training before deleting it.")
-        shutil.rmtree(AGENTS_DIR / aid, ignore_errors=True)
+        store.docs.delete_prefix(f"{DOCS}/{aid}")
+        store.logs.delete(f"{DOCS}/{aid}/log.jsonl")
+        store.files.remove(AGENTS_DIR / aid)
 
     def model_path(self, aid: str, which: str = "final") -> Path:
         d = AGENTS_DIR / aid
         f = d / f"{which}.npz" if which in ("final", "best") else d / "ckpt" / which
-        if "/" in aid or not f.exists():
+        if "/" in aid or "/" in which or not store.files.pull(f, fresh=which in ("final", "best")):
             raise KeyError(f"model '{aid}/{which}' not found")
         return f
 

@@ -73,7 +73,8 @@ def test_external_controller_in_a_benchmark_and_live(controller):
     row = st["conditions"][0]["rows"][1]
     assert not row["errors"] and row["runs"] == 2
     assert row["measures"]["mean_travel_time_s"]["mean"] > 0
-    res = json.loads((Path(os.environ["TRAFFICSIM_DATA"]) / "workspace" / "research" / "benchmarks" / b["id"] / "results.json").read_text())
+    from trafficsim import store
+    res = store.docs.read(f"research/benchmarks/{b['id']}/results.json")
     stats = res[1]["seed_results"][0]["controller_stats"]
     assert stats["calls"] > 100 and stats["failures"] == 0 and stats["changes"] > 0
     # a controller on a host that is not allowed is refused before anything runs

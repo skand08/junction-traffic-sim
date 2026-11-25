@@ -14,6 +14,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
+  if (r.status === 401 && !path.startsWith("/auth/")) window.dispatchEvent(new Event("junction:signed-out"));
   if (!r.ok) {
     let msg = `Request failed (${r.status})`;
     try {
@@ -27,6 +28,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function upload<T>(path: string, file: File): Promise<T> {
   const r = await fetch(BASE + path, { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream" } });
+  if (r.status === 401) window.dispatchEvent(new Event("junction:signed-out"));
   if (!r.ok) {
     let msg = `Upload failed (${r.status})`;
     try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* keep */ }
@@ -35,8 +37,15 @@ async function upload<T>(path: string, file: File): Promise<T> {
   return r.json();
 }
 
+export type AuthUser = { email: string; name: string; admin: boolean };
+export type AuthState = { enabled: boolean; user: AuthUser | null };
+
 export const api = {
   health: () => req<Health>("/health"),
+  // sign-in (only when the server has accounts)
+  me: () => req<AuthState>("/auth/me"),
+  login: (email: string, password: string) => req<AuthState>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   // network library
   networkGeometry: (nid: string) => req<Geometry>(`/networks/${nid}/geometry`),
   networkSignals: (nid: string) => req<Record<string, SignalProgram>>(`/networks/${nid}/signals`),

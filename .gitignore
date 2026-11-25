@@ -12,3 +12,8 @@ frontend/tsconfig.tsbuildinfo
 .DS_Store
 .idea/
 .vscode/
+# Deployment: local secrets and the Vercel link
+.env
+.env.*
+!.env.example
+.vercel/

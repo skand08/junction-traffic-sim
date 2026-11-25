@@ -9,6 +9,7 @@ import Research from "./pages/Research";
 import Overview from "./pages/Overview";
 import { when } from "./shared";
 import type { Health, Network, Scenario, Simulation } from "./types";
+import type { AuthUser } from "./api";
 
 type Section = "overview" | "network" | "scenario" | "simulation" | "results" | "experiments" | "research";
 const SECTIONS: { id: Section; name: string; short: string; icon: string }[] = [
@@ -35,7 +36,7 @@ function readHash() {
   return { s: h.get("s") as Section | null, n: h.get("n"), sc: h.get("sc"), sim: h.get("sim"), exp: h.get("exp") };
 }
 
-export default function App() {
+export default function App({ user, onSignOut }: { user: AuthUser | null; onSignOut: () => void }) {
   const init = readHash();
   const [section, setSection] = useState<Section>(init.s && SECTIONS.some((x) => x.id === init.s) ? init.s : "overview");
   const [health, setHealth] = useState<Health | null>(null);
@@ -101,6 +102,12 @@ export default function App() {
       <header className="bar">
         <div className="brand"><span className="mark" aria-hidden="true" />Junction</div>
         <p className="tag">Test a street change before you build it.</p>
+        {user && (
+          <div className="bar-actions">
+            <span className="bar-user" title={user.email}>{user.name}</span>
+            <button className="btn small bar-btn" onClick={onSignOut}>Sign out</button>
+          </div>
+        )}
         <input ref={fileRef} type="file" accept="application/json" hidden onChange={(e) => e.target.files?.[0] && openFile(e.target.files[0])} />
       </header>
 
