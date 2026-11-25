@@ -308,7 +308,21 @@ logs = PgLogs() if SHARED else FileLogs(config.WORKSPACE_DIR)
 files = _files()
 
 
-def ready():
-    """Create tables on first use of a database (no-op for local files)."""
-    if SHARED:
+DB_ERROR: Optional[str] = None
+
+
+def ready(strict: bool = True):
+    """Create tables on first use of a database (no-op for local files). strict=False (the API): log a failure
+    and keep serving, so /api/health can say what is wrong instead of the server never starting."""
+    global DB_ERROR
+    if not SHARED:
+        return
+    print(f"Database: {db.describe()}", flush=True)
+    try:
         db.migrate()
+        DB_ERROR = None
+    except Exception as e:  # noqa: BLE001
+        DB_ERROR = f"Cannot reach the database ({db.describe()}): {type(e).__name__}: {str(e).splitlines()[0][:300]}"
+        print(DB_ERROR, flush=True)
+        if strict:
+            raise SystemExit(DB_ERROR)

@@ -17,7 +17,20 @@ from contextlib import contextmanager
 # The pooled connection string. A Marketplace integration installed with an environment-variable prefix (for example
 # TRAFFIC_) names it <PREFIX>DATABASE_URL; set JUNCTION_DB_ENV_PREFIX to that prefix, or "TRAFFIC_" is tried too.
 _PREFIXES = [os.environ.get("JUNCTION_DB_ENV_PREFIX", ""), "", "TRAFFIC_"]
-URL = next((os.environ[p + n] for p in _PREFIXES for n in ("DATABASE_URL", "POSTGRES_URL") if os.environ.get(p + n)), "")
+SOURCE, URL = next(((p + n, os.environ[p + n]) for p in _PREFIXES for n in ("DATABASE_URL", "POSTGRES_URL")
+                    if os.environ.get(p + n)), ("", ""))
+
+
+def describe() -> str:
+    """Which variable and host the app uses (no password), for start-up logs and /api/health."""
+    if not URL:
+        return "none (local files)"
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(URL)
+        return f"{SOURCE} -> {u.hostname}:{u.port or 5432}/{u.path.lstrip('/')}"
+    except ValueError:
+        return f"{SOURCE} -> (unreadable URL)"
 POOL_MAX = int(os.environ.get("DATABASE_POOL_MAX", "5"))
 
 _pool = None
@@ -88,8 +101,9 @@ def pool():
             from psycopg_pool import ConnectionPool
             # prepare_threshold=None: no server-side prepared statements, so a transaction-mode pooler
             # (Neon's -pooler endpoint, PgBouncer) works
-            _pool = ConnectionPool(URL, min_size=1, max_size=POOL_MAX, open=True, timeout=30,
-                                   kwargs=dict(autocommit=True, prepare_threshold=None), check=ConnectionPool.check_connection)
+            _pool = ConnectionPool(URL, min_size=1, max_size=POOL_MAX, open=True, timeout=15,
+                                   kwargs=dict(autocommit=True, prepare_threshold=None, connect_timeout=10),
+                                   check=ConnectionPool.check_connection)
             _pool_pid = os.getpid()
             atexit.register(_close)
     return _pool

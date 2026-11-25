@@ -22,10 +22,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, auth, build, calibrate, catalog, config, envexport, geometry, external, importer, jobqueue, jobs, live, names, runner, simulations, store, scenario as sc
+from . import analysis, auth, build, db, calibrate, catalog, config, envexport, geometry, external, importer, jobqueue, jobs, live, names, runner, simulations, store, scenario as sc
 from .scenario import Edit, Scenario
 
-store.ready()                     # creates the database tables on first start (no-op with local files)
+store.ready(strict=False)         # creates the database tables on first start (no-op with local files)
 app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.environ.get("TRAFFICSIM_CORS", "*").split(","),
                    allow_methods=["*"], allow_headers=["*"])
@@ -52,8 +52,9 @@ def _nf(e: Exception):
 @app.get("/api/health")
 def health():
     return dict(ok=True, workers=config.MAX_WORKERS, versions=jobs.versions(),
-                storage=dict(documents="postgres" if store.SHARED else "files", files="blob" if store.files.remote else "local",
-                             execution=jobqueue.EXECUTION, queue=jobqueue.depth() if jobqueue.remote() else None),
+                storage=dict(documents="postgres" if store.SHARED else "files", database=db.describe(),
+                             database_error=store.DB_ERROR, files="blob" if store.files.remote else "local",
+                             execution=jobqueue.EXECUTION, queue=jobqueue.depth() if jobqueue.remote() and not store.DB_ERROR else None),
                 settings=dict(time_to_teleport_s=runner.TELEPORT_S, ignore_junction_blocker_s=runner.JUNCTION_BLOCKER_S, step_length_s=config.STEP_LENGTH,
                               drain_s=config.DRAIN_S, default_seeds=config.DEFAULT_SEEDS))
 
