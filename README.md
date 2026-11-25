@@ -87,6 +87,15 @@ from the change, not from luck. A result is "consistent" when the proposal wins 
 
 Run the tests with `cd backend && pytest -q`.
 
+## Flyovers
+
+Select a junction in the Scenario Builder and choose **Build flyover**. The road that goes straight through the
+junction is carried over it on its own deck: ramps leave the approach a set distance before the junction and rejoin
+after it, while turning traffic and the cross street keep using the junction at street level. Lanes, speed limit,
+ramp length and direction (one or both ways) are adjustable. Existing routes are adapted so through traffic uses the
+deck and nothing else changes, which keeps comparisons with the original network fair. Implementation:
+`backend/trafficsim/flyover.py`.
+
 ## Integrations
 
 - **External signal controllers.** Run your own controller as a small web service and use it in the live view

@@ -41,6 +41,10 @@ def label_edges(features: list, base_network: str) -> None:
         p = f["properties"]
         if p.get("kind") != "edge":
             continue
+        if p.get("flyover"):
+            h = heading(f["geometry"]["coordinates"])
+            p["heading"], p["label"] = h, f"Flyover over junction {p['flyover']}, {h}bound"
+            continue
         if not p.get("name"):
             p["name"] = names.get(osm_way(p["id"]), "")
         h = heading(f["geometry"]["coordinates"])

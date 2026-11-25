@@ -126,6 +126,9 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
   const signals = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "signal"), [geometry]);
   const junctions = useMemo(() => (geometry?.features ?? []).filter((f) => f.properties.kind === "junction"), [geometry]);
   const closedEdges = useMemo(() => edges.filter((f) => !(f.properties as EdgeProps).car_allowed), [edges]);
+  // flyover decks are drawn last, over the junction they cross, with a dark casing like a bridge
+  const groundEdges = useMemo(() => edges.filter((f) => !(f.properties as EdgeProps).flyover), [edges]);
+  const deckEdges = useMemo(() => edges.filter((f) => (f.properties as EdgeProps).flyover), [edges]);
   const showArrows = view.zoom >= 15.5;
   const zStep = Math.round(view.zoom * 2) / 2;            // rebuild arrows every half zoom level
   const arrows = useMemo(() => {
@@ -200,7 +203,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       capRounded: true, jointRounded: true, updateTriggers: { getColor: [selection?.id] },
     }),
     new PathLayer<Feature>({
-      id: "roads", data: edges, pickable: true, autoHighlight: true, highlightColor: [242, 183, 5, 170],
+      id: "roads", data: groundEdges, pickable: true, autoHighlight: true, highlightColor: [242, 183, 5, 170],
       getPath: (f) => (f.geometry as any).coordinates, getColor: colorFor, getWidth: widthFor,
       widthUnits: "meters", widthMinPixels: 2, capRounded: true, jointRounded: true,
       updateTriggers: { getColor: [mode, runEdges, cmpEdges, edited, edgeColorKey] },
@@ -246,6 +249,17 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
       updateTriggers: { getFillColor: [selection], getRadius: [hoverId] },
       onClick: (info) => info.object && onSelect({ kind: "signal", id: info.object.properties.id }),
     }),
+    new PathLayer<Feature>({
+      id: "deck-casing", data: deckEdges, getPath: (f) => (f.geometry as any).coordinates,
+      getColor: [38, 43, 48, 255], getWidth: (f) => widthFor(f) + 4, widthUnits: "meters", widthMinPixels: 6, capRounded: false,
+    }),
+    new PathLayer<Feature>({
+      id: "decks", data: deckEdges, pickable: true, autoHighlight: true, highlightColor: [242, 183, 5, 170],
+      getPath: (f) => (f.geometry as any).coordinates, getColor: colorFor, getWidth: widthFor,
+      widthUnits: "meters", widthMinPixels: 3, capRounded: false,
+      updateTriggers: { getColor: [mode, runEdges, cmpEdges, edited, edgeColorKey] },
+      onClick: (info) => info.object && onSelect({ kind: "edge", id: info.object.properties.id }),
+    }),
     ...(extraLayers ? extraLayers(view.zoom) : []),
   ];
 
@@ -254,7 +268,7 @@ export default function MapView({ geometry, mode, selection, onSelect, hoverId, 
     const p = info.object.properties as EdgeProps | SignalProps | JunctionProps;
     let text = "";
     if (p.kind === "edge") {
-      text = `${edgeLabel(p)}: ${p.lanes} lane${p.lanes === 1 ? "" : "s"}, ${Math.round(p.speed_kmh)} km/h`;
+      text = `${edgeLabel(p)}: ${p.lanes} lane${p.lanes === 1 ? "" : "s"}, ${Math.round(p.speed_kmh)} km/h${p.flyover ? ", grade-separated" : ""}`;
       if (!p.car_allowed) text += ", closed";
       const r = runEdges?.[p.id];
       if (mode === "results" && r?.delay_per_veh_s != null) text += `. ${r.delay_per_veh_s.toFixed(0)} s delay per vehicle`;

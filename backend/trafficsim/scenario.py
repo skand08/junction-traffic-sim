@@ -83,10 +83,24 @@ class SetRoadType(BaseModel):
     road_type: Literal["local", "collector", "arterial", "major_arterial", "expressway"]
 
 
+class AddFlyover(BaseModel):
+    """Carry the road from `from_edge` straight on to `to_edge` over the junction `node` on a flyover.
+    Ramps leave the approach `ramp_m` before the junction and rejoin `ramp_m` after it; turning traffic and the
+    cross street keep using the junction at street level. With both_ways, the opposite direction gets a deck too."""
+    type: Literal["add_flyover"] = "add_flyover"
+    node: str
+    from_edge: str
+    to_edge: str
+    lanes: int = Field(2, ge=1, le=4)
+    speed_kmh: float = Field(60, ge=20, le=100)
+    ramp_m: float = Field(100, ge=30, le=400)
+    both_ways: bool = True
+
+
 Edit = Annotated[Union[SetLanes, SetSpeed, CloseRoad, BanTurn, RetimeSignal, AddSignal, RemoveSignal,
-                       SetLaneWidth, SetRoadType], Field(discriminator="type")]
+                       SetLaneWidth, SetRoadType, AddFlyover], Field(discriminator="type")]
 NETWORK_EDITS = ("set_lanes", "set_speed", "close_road", "ban_turn", "add_signal", "remove_signal",
-                 "set_lane_width", "set_road_type")
+                 "set_lane_width", "set_road_type", "add_flyover")
 
 
 class Scenario(BaseModel):

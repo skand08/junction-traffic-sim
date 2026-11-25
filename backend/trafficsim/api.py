@@ -281,6 +281,19 @@ def _built_net(s: Scenario) -> Path:
             raise HTTPException(422, str(e))
 
 
+@app.get("/api/scenarios/{sid}/flyover-options")
+def flyover_options(sid: str, node: str):
+    """Roads that can be carried straight over this junction on a flyover."""
+    from . import flyover
+    s = _get(sid)
+    import sumolib
+    net = sumolib.net.readNet(str(catalog.ensure_network(s.base_network) / "net.net.xml"))
+    if not net.hasNode(node):
+        raise HTTPException(404, f"Junction '{node}' is not in this network.")
+    existing = [e.model_dump() for e in s.edits if e.type == "add_flyover" and e.node == node]
+    return dict(node=node, options=flyover.through_options(net, node), existing=existing)
+
+
 @app.get("/api/scenarios/{sid}/geometry")
 def scenario_geometry(sid: str):
     s = _get(sid)
@@ -293,6 +306,9 @@ def scenario_geometry(sid: str):
         for key in ("edge", "from_edge", "node"):
             if hasattr(e, key):
                 edited.setdefault(getattr(e, key), []).append(e.type)
+        if e.type == "add_flyover":
+            for k in range(2 if e.both_ways else 1):
+                edited.setdefault(f"{e.node}_flyover_{k}", []).append(e.type)
     return dict(g, edited=edited)
 
 

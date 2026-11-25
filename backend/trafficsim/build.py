@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List
 from xml.sax.saxutils import quoteattr
 
-from . import catalog, config
+from . import catalog, config, flyover
 from .scenario import NETWORK_EDITS, ROAD_TYPES, Scenario
 import sumolib
 
@@ -78,6 +78,19 @@ def _validate_network_edits(s: Scenario, net) -> None:
     for e in s.edits:
         if e.type in ("set_lanes", "set_speed") and e.edge in closed:
             raise EditError(f"Road '{e.edge}' is closed; reopen it before changing lanes or speed.")
+        if e.type == "add_flyover" and {e.from_edge, e.to_edge} & set(closed):
+            raise EditError(f"The flyover at junction {e.node} uses a closed road; reopen it first.")
+    _flyover_decks(s, net)
+
+
+def _flyover_decks(s: Scenario, net) -> list:
+    fly = [e for e in s.edits if e.type == "add_flyover"]
+    if not fly:
+        return []
+    try:
+        return flyover.plan(net, fly)
+    except flyover.FlyoverError as e:
+        raise EditError(str(e)) from e
 
 
 def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
@@ -94,6 +107,8 @@ def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     base = sumolib.net.readNet(str(base_net))
+    decks = _flyover_decks(s, base)
+    splits, deck_edges, deck_cons = flyover.patches(decks)
     edge_attrs: dict = {}
     lane_children: dict = {}
     for e in net_edits:
@@ -126,25 +141,28 @@ def _build_network(s: Scenario, base_dir: Path) -> tuple[Path, List[str]]:
             f'  <node id={quoteattr(n)} type="{t}"' + (' tlType="static"' if t == "traffic_light" else "") + "/>\n"
             for n, t in node_types.items()) + "</nodes>\n")
         cmd += ["-n", str(nf)]
-    if edge_attrs:
+    if edge_attrs or splits:
         ef = out_dir / "patch.edg.xml"
         parts = ["<edges>\n"]
-        for eid, a in edge_attrs.items():
+        for eid in list(edge_attrs) + [x for x in splits if x not in edge_attrs]:
+            a = edge_attrs.get(eid, {})
             attrs = " ".join(f'{k}="{v}"' for k, v in a.items())
-            kids = lane_children.get(eid)
-            if kids and "disallow" not in a:
-                parts.append(f"  <edge id={quoteattr(eid)} {attrs}>\n" + "".join(
-                    f'    <lane index="{i}" allow={quoteattr(p)}/>\n' for i, p in enumerate(kids)) + "  </edge>\n")
+            kids = lane_children.get(eid) if "disallow" not in a else None
+            inner = "".join(f'    <lane index="{i}" allow={quoteattr(p)}/>\n' for i, p in enumerate(kids or []))
+            inner += "".join(f"    {x}\n" for x in splits.get(eid, []))
+            if inner:
+                parts.append(f"  <edge id={quoteattr(eid)} {attrs}>\n{inner}  </edge>\n")
             else:
                 parts.append(f"  <edge id={quoteattr(eid)} {attrs}/>\n")
+        parts += deck_edges
         ef.write_text("".join(parts) + "</edges>\n")
         cmd += ["-e", str(ef)]
     bans = [e for e in net_edits if e.type == "ban_turn"]
-    if bans:
+    if bans or deck_cons:
         cf = out_dir / "patch.con.xml"
-        cf.write_text("<connections>\n" + "".join(
-            f"  <delete from={quoteattr(b.from_edge)} to={quoteattr(b.to_edge)}/>\n" for b in bans)
-            + "</connections>\n")
+        cf.write_text("<connections>\n" + "".join(deck_cons) + "".join(
+            f"  <delete from={quoteattr(flyover.remap(b.from_edge, 'from', decks))} to={quoteattr(flyover.remap(b.to_edge, 'to', decks))}/>\n"
+            for b in bans) + "</connections>\n")
         cmd += ["-x", str(cf)]
     r = subprocess.run(cmd, capture_output=True, text=True, env=config.tool_env())
     if r.returncode != 0 or not out_net.exists():
@@ -201,6 +219,16 @@ def _check_routes(net_file: Path, demand_file: Path) -> tuple[int, int]:
         if path is None:
             bad += n
     return bad, total
+
+
+def _flyover_demand(demand: Path, net_file: Path, decks: list) -> Path:
+    key = hashlib.sha1(f"{demand}:{demand.stat().st_mtime}".encode()).hexdigest()[:12]
+    out = Path(net_file).parent / f"demand_{key}.rou.xml"
+    if not out.exists():
+        tmp = out.with_suffix(".tmp")
+        flyover.rewrite_demand(demand, tmp, decks)
+        tmp.replace(out)
+    return out
 
 
 def _num(x: float) -> str:
@@ -273,6 +301,9 @@ def build(s: Scenario, out_dir: Path) -> Build:
                             "destinations. Reopen a road or remove a turn ban.")
         if bad:
             warnings.append(f"{bad} of {total} trips can no longer reach their destination and will be skipped.")
+    decks = _flyover_decks(s, base)
+    if decks:                                          # explicit routes take the flyover straight through
+        demand = _flyover_demand(demand, net_file, decks)
     tls_add = _tls_additional(s, net_file, out_dir, warnings)
     return Build(net_file=net_file, demand_file=demand, begin=m["begin"], end=m["end"],
                  tls_additional=tls_add, warnings=warnings, unroutable_trips=bad, total_trips=total)

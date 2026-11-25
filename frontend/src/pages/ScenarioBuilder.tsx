@@ -182,6 +182,7 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
       case "add_signal": return `${nodeName(e.node)}: new traffic signal`;
       case "remove_signal": return `${nodeName(e.node)}: signal removed (priority junction)`;
       case "set_lane_width": return `${roadName(e.edge)}: lanes ${e.width_m} m wide (was ${edges[e.edge]?.lane_width_m ?? "?"} m)`;
+      case "add_flyover": return `Flyover at ${signalTitle(e.node)}: ${roadName(e.from_edge).replace(/, \w+bound$/, "")}${e.both_ways ? ", both directions" : ""} (${e.lanes} lane${e.lanes > 1 ? "s" : ""}, ${e.speed_kmh} km/h)`;
       case "set_road_type": { const t = ROAD_TYPES.find((r) => r.id === e.road_type); return `${roadName(e.edge)}: ${t?.label.toLowerCase()} (${t?.speed_kmh} km/h)`; }
     }
   };
@@ -194,6 +195,7 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
       ? { kind: "signal", id: sigFeature((x) => x.tls.includes(e.tls))?.id ?? e.tls }
       : e.type === "add_signal" ? { kind: "signal", id: e.node }
       : e.type === "remove_signal" ? { kind: "junction", id: e.node }
+      : e.type === "add_flyover" ? { kind: sigFeature((x) => x.id === e.node) ? "signal" : "junction", id: e.node }
       : { kind: "edge", id: "edge" in e ? e.edge : e.from_edge };
     setSel(sel2); zoomTo(sel2.kind, sel2.id);
   };

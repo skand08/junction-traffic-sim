@@ -1,4 +1,4 @@
-import type { Calibration, ControllerTestResult, EnvExportCfg, Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, EpisodeRow } from "./types";
+import type { FlyoverOption, Edit as EditT, Calibration, ControllerTestResult, EnvExportCfg, Bundle, Comparison, Edit, Geometry, Health, Job, Network, Run, RunSummary, Scenario, SignalProgram, Simulation, ResultSummary, LiveFrame, LiveInfo, LiveSetup, LiveStatic, AgentConfig, AgentInfo, BenchConfig, BenchInfo, BenchStats, EpisodeRow } from "./types";
 
 const BASE = (import.meta as any).env?.VITE_API ?? "/api";
 
@@ -96,6 +96,8 @@ export const api = {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     return name;
   },
+  flyoverOptions: (sid: string, node: string) =>
+    req<{ node: string; options: FlyoverOption[]; existing: Extract<EditT, { type: "add_flyover" }>[] }>(`/scenarios/${sid}/flyover-options?node=${encodeURIComponent(node)}`),
   countsTemplateUrl: (sid: string) => `${BASE}/scenarios/${sid}/counts-template.csv`,
   startCalibration: (sid: string, csv: string) => req<Calibration>(`/scenarios/${sid}/calibrations`, { method: "POST", body: JSON.stringify({ csv }) }),
   calibrations: (sid: string) => req<Calibration[]>(`/scenarios/${sid}/calibrations`),
