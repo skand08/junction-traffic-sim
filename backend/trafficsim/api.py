@@ -30,6 +30,16 @@ app = FastAPI(title="Traffic Scenario Simulator", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.environ.get("TRAFFICSIM_CORS", "*").split(","),
                    allow_methods=["*"], allow_headers=["*"])
 auth.install(app)                 # sign-in, when JUNCTION_SECRET is set
+
+
+@app.exception_handler(Exception)
+async def _server_error(request: Request, e: Exception):
+    """Unexpected errors answer with what failed (the app shows `detail`), and the traceback goes to the log."""
+    import traceback
+    traceback.print_exception(e)
+    return JSONResponse({"detail": f"Server error: {type(e).__name__}: {str(e)[:500]}"}, status_code=500)
+
+
 auth.bootstrap()
 _jobs: jobs.JobManager | None = None
 _jobs_lock = threading.Lock()
@@ -54,6 +64,7 @@ def health():
     return dict(ok=True, workers=config.MAX_WORKERS, versions=jobs.versions(),
                 storage=dict(documents="postgres" if store.SHARED else "files", database=db.describe(),
                              database_error=store.DB_ERROR, files="blob" if store.files.remote else "local",
+                             files_error=store.files_problem(),
                              execution=jobqueue.EXECUTION, queue=jobqueue.depth() if jobqueue.remote() and not store.DB_ERROR else None),
                 settings=dict(time_to_teleport_s=runner.TELEPORT_S, ignore_junction_blocker_s=runner.JUNCTION_BLOCKER_S, step_length_s=config.STEP_LENGTH,
                               drain_s=config.DRAIN_S, default_seeds=config.DEFAULT_SEEDS))

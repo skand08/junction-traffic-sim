@@ -303,6 +303,20 @@ class BlobFiles:
         LocalFiles().remove(p)
 
 
+def files_problem() -> Optional[str]:
+    """Why Blob files cannot be written here, or None. The Blob SDK signs in with BLOB_READ_WRITE_TOKEN, or with a
+    Vercel OIDC token plus BLOB_STORE_ID. Daemons get that token as a file; the API container does not (the SDK
+    only finds it in Vercel's own runtimes), and background jobs have no request to take it from."""
+    token = os.environ.get("BLOB_READ_WRITE_TOKEN") or os.environ.get("VERCEL_BLOB_READ_WRITE_TOKEN")
+    store_id = os.environ.get("BLOB_STORE_ID")
+    if token or not store_id:
+        return None
+    if os.environ.get("VERCEL_OIDC_TOKEN_FILE") or os.environ.get("VERCEL_OIDC_TOKEN"):
+        return None
+    return ("BLOB_STORE_ID is set but this process has no Blob credentials: add the store's read-write token as "
+            "BLOB_READ_WRITE_TOKEN (Storage -> the store -> Connect with a read-write token), then redeploy.")
+
+
 def _files():
     if os.environ.get("BLOB_READ_WRITE_TOKEN") or os.environ.get("BLOB_STORE_ID"):
         return BlobFiles(config.DATA_DIR, os.environ.get("BLOB_ACCESS", "private"))

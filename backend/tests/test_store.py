@@ -139,3 +139,19 @@ def test_job_queue_claims_once_and_carries_commands():
     assert [j for j, _ in jobqueue.claim("wc", kind, 5)] == [f"{k}_1"]
     with db.conn() as c:
         c.execute("DELETE FROM jobs WHERE kind = %s", (kind,))
+
+
+def test_blob_credentials_are_checked_not_assumed(monkeypatch):
+    """A connected store id alone is not enough outside a daemon: the API container gets no OIDC token,
+    so /api/health must say files cannot be written instead of reporting Blob as working."""
+    for k in ("BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_READ_WRITE_TOKEN", "BLOB_STORE_ID", "VERCEL_OIDC_TOKEN",
+              "VERCEL_OIDC_TOKEN_FILE"):
+        monkeypatch.delenv(k, raising=False)
+    assert store.files_problem() is None                              # no Blob configured: local files
+    monkeypatch.setenv("BLOB_STORE_ID", "store_abc")
+    assert "BLOB_READ_WRITE_TOKEN" in store.files_problem()
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN_FILE", "/var/run/oidc/token")   # a Vercel daemon
+    assert store.files_problem() is None
+    monkeypatch.delenv("VERCEL_OIDC_TOKEN_FILE")
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_store_secret")
+    assert store.files_problem() is None

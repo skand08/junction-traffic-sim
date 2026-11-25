@@ -65,9 +65,11 @@ vercel blob create-store junction-files --access private
 ```
 
 Connect the store to the project when the CLI asks, or later under **Storage → junction-files → Connect
-Project**. On Vercel, the app then signs in with the project's OIDC token and `BLOB_STORE_ID`. To use the store
-from your own machine (a local worker, copying data), also copy the store's read-write token into
-`BLOB_READ_WRITE_TOKEN` in your local `.env` file.
+Project**. When connecting, tick **Add a read-write token env var** for Production and Preview, so the project gets
+`BLOB_READ_WRITE_TOKEN`. The token is required: the API runs as a container, where the Blob SDK cannot pick up
+Vercel's OIDC sign-in, and trainings, calibrations and imports write files from background work that has no request
+to take it from. Without the token, `/api/health` shows `files_error`, and those features fail. To use the store
+from your own machine (a local worker, copying data), copy the same token into your local `.env` file.
 
 ### 4. Set the environment variables
 
@@ -250,6 +252,6 @@ sits in the worker.
 | Simulations stay at "Waiting to start" | Is the worker running? Look in the dashboard under Daemons, or run `vercel daemons ls`. Check its logs (filter by source `daemon`). Previews have no worker |
 | Every page asks to sign in again | `JUNCTION_SECRET` changed, or the account was removed or got a new password |
 | `/api/health` shows `files: local` on Vercel | The Blob store is not connected to this environment. Connect it, then redeploy |
-| Blob errors mentioning credentials | Add the store's `BLOB_READ_WRITE_TOKEN` as an environment variable and redeploy |
+| `/api/health` shows `files_error`, or trainings, calibrations or imports fail with "Missing Blob credentials" | Add the store's `BLOB_READ_WRITE_TOKEN` to this environment and redeploy |
 | "too many connections" from Postgres | `DATABASE_URL` must be Neon's pooled (`-pooler`) string. Lower `DATABASE_POOL_MAX` if needed |
 | A trained agent's model is "not found" on another page | The Blob store was missing while it trained; the model stayed on that worker's disk. Train it again with Blob connected |
