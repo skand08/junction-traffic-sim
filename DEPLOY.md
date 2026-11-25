@@ -52,7 +52,8 @@ vercel install neon    # choose region AWS us-east-1 (next to iad1, where the wo
 ```
 
 This creates the database and adds `DATABASE_URL` (the pooled connection, which is the one to use) and related
-variables to the project. The tables are created automatically on the first start; see [Database changes](#database-changes).
+variables to the project. If the integration was installed with a prefix, the app also reads
+`TRAFFIC_DATABASE_URL`; for another prefix, set `JUNCTION_DB_ENV_PREFIX` to it (for example `MYAPP_`). The tables are created automatically on the first start; see [Database changes](#database-changes).
 
 Previews should not write into production data. In the Neon integration settings, turn on a **database branch
 for each preview deployment**. Alternatively, set a separate `DATABASE_URL` for the Preview environment.

@@ -14,7 +14,10 @@ import sys
 import threading
 from contextlib import contextmanager
 
-URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or ""
+# The pooled connection string. A Marketplace integration installed with an environment-variable prefix (for example
+# TRAFFIC_) names it <PREFIX>DATABASE_URL; set JUNCTION_DB_ENV_PREFIX to that prefix, or "TRAFFIC_" is tried too.
+_PREFIXES = [os.environ.get("JUNCTION_DB_ENV_PREFIX", ""), "", "TRAFFIC_"]
+URL = next((os.environ[p + n] for p in _PREFIXES for n in ("DATABASE_URL", "POSTGRES_URL") if os.environ.get(p + n)), "")
 POOL_MAX = int(os.environ.get("DATABASE_POOL_MAX", "5"))
 
 _pool = None
