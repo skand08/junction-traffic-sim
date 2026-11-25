@@ -6,6 +6,7 @@ import SimulationPage from "./pages/Simulation";
 import ResultsPage from "./pages/ResultsPage";
 import Experiments from "./Experiments";
 import Research from "./pages/Research";
+import Overview from "./pages/Overview";
 import { when } from "./shared";
 import type { Health, Network, Scenario, Simulation } from "./types";
 
@@ -126,51 +127,7 @@ export default function App() {
           )}
 
           {section === "overview" && (
-            <main className="work page-only">
-              <section className="page">
-                <div className="page-head">
-                  <h1>Overview</h1>
-                  <p className="lead">Add a road network, build scenarios of changes to it, and simulate them against each other.</p>
-                </div>
-                <div className="tiles">
-                  <button className="tile" onClick={() => go("network")}>
-                    <span className="tile-num">{counts.networks}</span><span className="tile-name">Networks</span>
-                    <span className="small muted">Add from OpenStreetMap or a SUMO file.</span>
-                  </button>
-                  <button className="tile" onClick={() => go("scenario")}>
-                    <span className="tile-num">{counts.scenarios}</span><span className="tile-name">Scenarios</span>
-                    <span className="small muted">Lanes, closures, turns, signal timing and control, traffic level.</span>
-                  </button>
-                  <button className="tile" onClick={() => go("simulation")}>
-                    <span className="tile-num">{counts.sims}</span><span className="tile-name">Simulations</span>
-                    <span className="small muted">{running ? "One is running now." : "Compare scenarios with the same traffic."}</span>
-                  </button>
-                </div>
-                <div className="card">
-                  <h2>How it works</h2>
-                  <ol className="steps">
-                    <li><b>Network Explorer:</b> pick a network or add one from a map area.</li>
-                    <li><b>Scenario Builder:</b> make one scenario per idea you want to test.</li>
-                    <li><b>Traffic Simulation:</b> run scenarios against the network as it is.</li>
-                    <li><b>Results &amp; Analytics:</b> check data quality first, then the change and how sure it is.</li>
-                  </ol>
-                </div>
-                {sims.length > 0 && (
-                  <div className="card">
-                    <h2>Recent simulations</h2>
-                    <ul className="recent">
-                      {sims.slice(0, 5).map((s) => (
-                        <li key={s.id}>
-                          <span><b>{s.name}</b> <span className="small muted">{networks.find((n) => n.id === s.network)?.name ?? s.network}, {when(s.created)}</span></span>
-                          {s.state === "done" ? <button className="btn quiet small" onClick={() => { setSimSel(s.id); go("results"); }}>View results</button>
-                            : <span className={`status ${s.state}`}>{s.state === "running" ? "Running" : s.state}</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </section>
-            </main>
+            <Overview networks={networks} scenarios={scenarios} sims={sims} go={go} openResult={(id) => { setSimSel(id); go("results"); }} />
           )}
 
           {section === "network" && (

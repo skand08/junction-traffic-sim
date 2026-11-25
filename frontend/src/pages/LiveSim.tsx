@@ -1,3 +1,4 @@
+import NetworkPick from "../NetworkPick";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { api } from "../api";
@@ -328,7 +329,8 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
         {geo ? (
           <MapView geometry={geo} mode="layout" selection={sel} onSelect={onMapSelect} edgeColor={edgeColor} focus={focus} edgeColorKey={`${frame?.seq}-${layers.color}-${laneView}`}
             extraLayers={extraLayers} onZoom={setZoom} />
-        ) : <div className="empty-stage"><p>{nid ? "Loading the network…" : "Choose a network and scenario to see its map."}</p></div>}
+        ) : nid ? <div className="empty-stage"><p>Loading the network…</p></div>
+          : <div className="empty-stage"><NetworkPick networks={networks} onPick={(id) => { setNid(id); setSid(""); setRoutes([]); }} title="Choose a network to simulate" /></div>}
 
         {frame && k && (
           <div className="kpis" aria-label="Live traffic">
@@ -353,9 +355,9 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
             <Toggle on={layers.color === "delay"} onClick={() => setLayers({ ...layers, color: layers.color === "delay" ? null : "delay" })} label="Delay" swatch="heat" disabled={!info} />
             <Toggle on={layers.color === "changed"} onClick={() => setLayers({ ...layers, color: layers.color === "changed" ? null : "changed" })} label="What changed" swatch="changed" />
             {info && layers.color && layers.color !== "changed" && (
-              <span className="layer-key">{layers.color === "congestion" ? "Light: near the speed limit · dark: far below it" : "Light: little waiting · dark: 100+ s per vehicle"}</span>
+              <span className="layer-key">{layers.color === "congestion" ? "Light: near the speed limit; dark: far below it" : "Light: little waiting · dark: 100+ s per vehicle"}</span>
             )}
-            {layers.flow && info && <span className="layer-key"><i className="dot-k stopped" />stopped vehicle{zoom < 16.5 ? " · zoom in for vehicle shapes" : ""}</span>}
+            {layers.flow && info && <span className="layer-key"><i className="dot-k stopped" />stopped vehicle{zoom < 16.5 ? "; zoom in for vehicle shapes" : ""}</span>}
           </div>
         )}
 
@@ -390,8 +392,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
           {tabs}
           {!info ? (
             <section className="step">
-              <h2>Live simulation</h2>
-              <p className="lead">Watch a scenario run in SUMO: vehicles, signals and queues as they are simulated, second by second.</p>
+              <h2>Set up a live run</h2>
               <label className="field block"><span className="label">Network</span>
                 <select value={nid} onChange={(e) => { setNid(e.target.value); setSid(""); setRoutes([]); }}>
                   <option value="">Choose a network…</option>
@@ -416,7 +417,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                 {controller === "external" ? (
                   <div className="rl-pick">
                     <ExternalPicker value={ext} onChange={setExt} compact />
-                    <span className="small muted">Your service picks each next green; Junction adds amber and all-red. See Research, Your own code.</span>
+                    <span className="small muted">Junction adds amber and all-red to every change.</span>
                   </div>
                 ) : controller === "rl" ? (
                   <div className="rl-pick">
@@ -434,7 +435,8 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                     {agent && agent.manifest.network !== nid && <span className="small warn-text">Trained on another network; only shared-parameter agents can run here.</span>}
                   </div>
                 ) : (
-                  <span className="small muted">{controller && scenario && controller !== scenario.controller ? `Overrides the scenario's ${CONTROLLERS.find((c) => c.id === scenario.controller)?.name.toLowerCase()} for this run.` : "From the scenario."}{!agents.length && " RL agent: train one in Research first."}</span>
+                  controller && scenario && controller !== scenario.controller
+                    ? <span className="small muted">Replaces the scenario's {CONTROLLERS.find((c) => c.id === scenario.controller)?.name.toLowerCase()} for this run.</span> : null
                 )}
               </div>
               <div className="field block"><span className="label">Traffic intensity</span>
@@ -453,7 +455,7 @@ export default function LiveSim({ networks, scenarios, preset, onChanged, fail, 
                 <select value={mix} onChange={(e) => setMix(e.target.value as LiveSetup["mix"])}>
                   {MIX.map(([v, l, d]) => <option key={v} value={v}>{l}{d ? ` (${d})` : ""}</option>)}
                 </select>
-                {mix !== "data" && <span className="small muted">Each type has its own size, acceleration and top speed. All use the lanes cars may use.</span>}
+                
               </label>
               <div className="field block"><span className="label">Duration of new traffic</span>
                 <div className="seg wide" role="radiogroup" aria-label="Duration">

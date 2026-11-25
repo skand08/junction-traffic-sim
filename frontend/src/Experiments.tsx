@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import PageHead from "./PageHead";
 import { api } from "./api";
 import Results, { fmt } from "./Results";
 import { controllerName, when, listNav } from "./shared";
@@ -62,10 +63,8 @@ function ExperimentList({ sims, networks, onSelect, onOpen, onChanged, onOpenFil
   return (
     <main className="work page-only">
       <section className="page">
-        <div className="page-head">
-          <h1>Experiments &amp; History</h1>
-          <p className="lead">Every simulation you ran. Open one to see what was compared, how it was run, its results and whether it reproduces.</p>
-        </div>
+        <PageHead title="Experiments & History" lead="Every simulation you ran: setup, results and whether it reproduces."
+          actions={<button className="btn secondary small" onClick={onOpenFile}>Open file</button>} />
         <div className="row spread page-tools">
           <div className="seg" role="tablist" aria-label="View">
             <button role="tab" aria-selected={tab === "sims"} onClick={() => setTab("sims")}>Simulations</button>
@@ -84,7 +83,7 @@ function ExperimentList({ sims, networks, onSelect, onOpen, onChanged, onOpenFil
               {shown.map((s) => (
                 <li key={s.id} className="exp">
                   <div className="exp-top">
-                    <span className="exp-when">{when(s.created)}{s.rerun_of && " · run again"}</span>
+                    <span className="exp-when">{when(s.created)}{s.rerun_of && ", run again"}</span>
                     {s.state !== "done" && <span className={`status ${s.state}`}>{{ running: "Running", failed: "Failed", cancelled: "Cancelled", missing: "Unavailable", done: "" }[s.state]}</span>}
                   </div>
                   <p className="exp-title"><button className="link strong" onClick={() => onSelect(s.id)}>{s.name}</button></p>
@@ -142,8 +141,6 @@ function ExperimentList({ sims, networks, onSelect, onOpen, onChanged, onOpenFil
           </>
         )}
 
-        <hr />
-        <button className="btn secondary small" onClick={onOpenFile}>Open a saved experiment or scenario file</button>
       </section>
     </main>
   );

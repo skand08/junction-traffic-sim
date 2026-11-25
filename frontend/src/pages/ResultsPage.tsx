@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import PageHead from "../PageHead";
 import { api } from "../api";
 import MapView, { edgeLabel, featureBBox, type MapMode, type Selection } from "../MapView";
 import Results, { fmt, quality } from "../Results";
@@ -36,10 +37,8 @@ function ResultsLibrary({ networks, onSelect, onOpenFile, onExperiment, sims, fa
   return (
     <main className="work page-only">
       <section className="page wide">
-        <div className="page-head">
-          <h1>Results &amp; Analytics</h1>
-          <p className="lead">Every finished simulation. Open one to see the map, the measures and the roads that changed most.</p>
-        </div>
+        <PageHead title="Results & Analytics" lead="Finished simulations: the change, where it happened and how sure it is."
+          actions={<button className="btn secondary small" onClick={onOpenFile}>Open experiment file</button>} />
         <div className="row spread page-tools">
           <div className="row nowrap">
             <input type="search" className="text" value={q} placeholder="Search by scenario name" aria-label="Search results" onChange={(e) => setQ(e.target.value)} />
@@ -48,7 +47,6 @@ function ResultsLibrary({ networks, onSelect, onOpenFile, onExperiment, sims, fa
               {networks.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
             </select>
           </div>
-          <button className="btn secondary small" onClick={onOpenFile}>Open a saved experiment file</button>
         </div>
         {!rows && <p className="status-line" role="status"><span className="spinner" aria-hidden="true" />Loading results…</p>}
         {rows && shown.length === 0 && <p className="small muted">{rows.length ? "No results match." : "No finished simulations yet. Run one in Traffic Simulation."}</p>}
@@ -71,11 +69,11 @@ function ResultsLibrary({ networks, onSelect, onOpenFile, onExperiment, sims, fa
                   {i === 0 && (
                     <th scope="rowgroup" rowSpan={r.alternatives.length}>
                       <span className="lib-name">{r.name}</span>
-                      <span className="lib-sub">{when(r.created)} · {r.seeds.length} runs{r.depart_jitter_s ? `, starts ±${Math.round(r.depart_jitter_s / 60)} min` : ""}{r.rerun_of ? " · run again" : ""}</span>
+                      <span className="lib-sub">{when(r.created)}, {r.seeds.length} runs{r.depart_jitter_s ? `, starts ±${Math.round(r.depart_jitter_s / 60)} min` : ""}{r.rerun_of ? " · run again" : ""}</span>
                     </th>
                   )}
                   {i === 0 && <td rowSpan={r.alternatives.length}>{netName(r.network)}</td>}
-                  <td>{a.scenario_name}<span className="lib-sub">vs {r.reference_name}{a.controller && a.controller !== "fixed" ? ` · ${controllerName(a.controller)}` : ""}</span></td>
+                  <td>{a.scenario_name}<span className="lib-sub">vs {r.reference_name}{a.controller && a.controller !== "fixed" ? `, ${controllerName(a.controller).toLowerCase()}` : ""}</span></td>
                   <td className="n-col">
                     <span className={`chg ${a.verdict === "better" ? "better" : a.verdict === "worse" ? "worse" : "same"}`}>{a.diff_s != null ? fmt(a.diff_s, "s", true) : "–"}</span>
                     {a.pct != null && <span className="muted small"> ({a.pct > 0 ? "+" : "−"}{Math.abs(a.pct).toFixed(1)}%)</span>}

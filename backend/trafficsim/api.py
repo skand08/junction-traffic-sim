@@ -823,7 +823,8 @@ def agent_export(aid: str):
         rows = TRAIN.log(aid)
         if rows:
             sio = io.StringIO()
-            w = _csv.DictWriter(sio, fieldnames=list(rows[0]))
+            cols = list(dict.fromkeys(k for r in rows for k in r))   # evaluation columns appear only on evaluated episodes
+            w = _csv.DictWriter(sio, fieldnames=cols)
             w.writeheader()
             w.writerows(rows)
             z.writestr("log.csv", sio.getvalue())

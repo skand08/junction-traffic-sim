@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import TrafficCounts from "../TrafficCounts";
+import PageHead from "../PageHead";
 import MapView, { edgeLabel, featureBBox, type Selection } from "../MapView";
 import EditPanel from "../EditPanel";
 import FindList from "../FindList";
@@ -44,33 +45,29 @@ export default function ScenarioBuilder({ networks, scenarios, selected, onSelec
   return (
     <main className="work page-only">
       <section className="page">
-        <div className="page-head row spread">
-          <div>
-            <h1>Scenario Builder</h1>
-            <p className="lead">A scenario is one version of a network: road changes, signal timings, signal control and amount of traffic. Build as many as you like, then simulate them against each other.</p>
-          </div>
-        </div>
-
-        <div className="card">
-          <h2>New scenario</h2>
-          <div className="row">
-            <select value={creating ?? ""} onChange={(e) => setCreating(e.target.value || null)} aria-label="Network for the new scenario">
-              <option value="">Choose a network…</option>
+        <PageHead title="Scenario Builder" lead="Each scenario is one version of a network: road and signal changes, control and traffic level."
+          actions={<>
+            <button className="btn secondary small" onClick={onOpenFile}>Open file</button>
+            <select value={creating ?? ""} onChange={(e) => setCreating(e.target.value || null)} aria-label="Network for a new scenario">
+              <option value="">New scenario on…</option>
               {networks.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
             </select>
-            {creating && <NewScenario nid={creating} onCreated={async (s) => { await onChanged(); setCreating(null); onSelect(s.id); }} fail={fail} />}
+          </>} />
+        {creating && (
+          <div className="card new-scen">
+            <h2>New scenario on {netName(creating)}</h2>
+            <NewScenario nid={creating} onCreated={async (s) => { await onChanged(); setCreating(null); onSelect(s.id); }} fail={fail} />
           </div>
-          <button className="btn quiet small" onClick={onOpenFile}>Open a saved scenario file</button>
-        </div>
+        )}
 
         <div className="row spread page-tools">
-          <h2 className="h2-inline">Your scenarios ({scenarios.length})</h2>
+          <h2 className="section-title">Your scenarios ({scenarios.length})</h2>
           <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Show scenarios for">
             <option value="all">All networks</option>
             {networks.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
           </select>
         </div>
-        {Object.keys(groups).length === 0 && <p className="small muted">No scenarios yet. Choose a network above to make one.</p>}
+        {Object.keys(groups).length === 0 && <p className="empty">No scenarios yet. Use “New scenario on…” above.</p>}
         {Object.entries(groups).map(([nid, list]) => (
           <div key={nid} className="scen-group">
             <h3>{netName(nid)}</h3>
@@ -223,7 +220,7 @@ function Editor({ scen, networks, onBack, onChanged, onSimulate, onDuplicate, on
             <button className="btn quiet small back" onClick={onBack}>← All scenarios</button>
             <input className="title-input" value={name} aria-label="Scenario name" disabled={locked}
               onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name !== s.name && update({ name: name.trim() })} />
-            <p className="small muted">{net?.name}{locked && " · the network as it is"}</p>
+            <p className="small muted">{net?.name}{locked && ", the network as it is"}</p>
             <textarea className="text" rows={2} value={desc} placeholder="What does this scenario test? (optional)" aria-label="Description" disabled={locked}
               onChange={(e) => setDesc(e.target.value)} onBlur={() => desc !== (s.description ?? "") && update({ description: desc })} />
             <div className="row">

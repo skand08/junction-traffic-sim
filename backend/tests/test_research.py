@@ -66,6 +66,8 @@ def test_train_benchmark_export_and_watch():
     assert info["manifest"]["episode_seeds"] == [3000, 3001, 3002, 3003]
     z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/research/agents/{aid}/export").content))
     assert {"config.json", "manifest.json", "log.jsonl", "log.csv", "final.npz"} <= set(z.namelist())
+    assert log[-1]["eval_travel_time_s"] > 0 and "eval_travel_time_s" not in log[0]   # evaluated every 5 and at the end
+    assert "eval_travel_time_s" in z.read("log.csv").decode().splitlines()[0]
 
     # a held-out scenario: the same network with a road change the agent never trained on
     held = c.post(f"/api/scenarios/{sid}/copy").json()["id"]
