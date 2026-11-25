@@ -26,6 +26,7 @@ from .scenario import Scenario
 
 RUNS_DIR = config.WORKSPACE_DIR / "runs"           # working files of runs (built network, per-seed outputs)
 FINAL = ("done", "failed", "cancelled")
+ORPHAN_AFTER_S = 60      # a just-submitted run may not be in the queue table yet
 APP_VERSION = "0.4.0"
 
 
@@ -99,6 +100,12 @@ class JobManager:
             if st.get("state") not in FINAL and not jobqueue.remote():
                 # recorded as running, but no process here runs it: the server stopped while it ran
                 st.update(state="failed", message="Failed", error="The server stopped while this ran. Run it again.")
+            elif st.get("state") not in FINAL and time.time() - (st.get("created") or 0) > ORPHAN_AFTER_S \
+                    and jobqueue.get(jid) is None:
+                # recorded as running by a process that is gone, and in no worker's queue (e.g. started by an
+                # API that ran jobs itself): nothing will finish it
+                st.update(state="failed", message="Failed",
+                          error="This run is no longer running: the server that started it stopped. Run it again.")
             return st
         return dict(id=jid, run_id=jid, scenario_id=run["scenario"]["id"], state=run["state"],
                     done=len(run.get("seed_results", [])), total=len(run["seeds"]),
