@@ -61,6 +61,11 @@ class FileDocs:
         tmp.write_text(json.dumps(data))
         tmp.replace(f)
 
+    def write_many(self, items):
+        """Write several documents, in the given order (put the one readers wait for last)."""
+        for path, data in items:
+            self.write(path, data)
+
     def merge(self, path: str, **kw) -> dict:
         with self.lock:
             d = self.read(path) or {}
@@ -127,6 +132,14 @@ class PgDocs:
             c.execute("INSERT INTO documents (path, collection, data) VALUES (%s, %s, %s) "
                       "ON CONFLICT (path) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
                       (_safe(path), collection(path), json.dumps(data)))
+
+    def write_many(self, items):
+        """Write several documents in one transaction: readers see all of them or none."""
+        with db.transaction() as c:
+            for path, data in items:
+                c.execute("INSERT INTO documents (path, collection, data) VALUES (%s, %s, %s) "
+                          "ON CONFLICT (path) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                          (_safe(path), collection(path), json.dumps(data)))
 
     def merge(self, path: str, **kw) -> dict:
         with db.transaction() as c:
