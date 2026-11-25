@@ -84,8 +84,9 @@ vercel env add JUNCTION_ADMIN_EMAIL production     # your email: the first accou
 vercel env add JUNCTION_ADMIN_PASSWORD production  # its password (change it after signing in)
 ```
 
-- `JUNCTION_SECRET` turns sign-in on. Without it, anyone with the URL can use the app and run simulations at
-  your cost.
+- Sign-in is currently switched off: the app opens without a sign-in page. To turn it on, also set
+  `JUNCTION_AUTH=on` and redeploy. While it is off, anyone with the production URL can use the app and run
+  simulations at your cost.
 - Changing `JUNCTION_SECRET` signs everyone out.
 
 ### 5. Deploy
@@ -143,7 +144,8 @@ These are the main variables. `.env.example` has the full list with defaults.
 | `DATABASE_URL` | Neon integration | Postgres. Unset: local JSON files |
 | `BLOB_STORE_ID` / `BLOB_READ_WRITE_TOKEN` | Blob store connection / you | File storage. Unset: local disk |
 | `JUNCTION_EXECUTION` | you: `queue` | The API queues work and the worker runs it. `local`: the API runs jobs itself (one machine only) |
-| `JUNCTION_SECRET` | you | Turns sign-in on and signs session cookies |
+| `JUNCTION_AUTH` | you: `on` to require sign-in | Sign-in is off unless this is `on` (currently off) |
+| `JUNCTION_SECRET` | you | Signs session cookies; needed when sign-in is on |
 | `JUNCTION_ADMIN_EMAIL`, `JUNCTION_ADMIN_PASSWORD` | you | First account, created on start if none exists |
 | `JUNCTION_WORKER_RUNS`, `…_TRAININGS`, `…_BENCHMARKS`, `…_CALIBRATIONS`, `…_LIVE` | optional | Jobs at once per worker instance |
 | `TRAFFICSIM_WORKERS` | optional | SUMO processes at once per job. Default: CPU count − 1 |

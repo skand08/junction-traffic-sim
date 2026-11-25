@@ -1,6 +1,6 @@
 """Sign-in for a shared deployment (a team of 10-20 people sharing one workspace).
 
-Off unless JUNCTION_SECRET is set (local use needs no accounts). When on, every /api request except signing in
+Off unless JUNCTION_AUTH=on and JUNCTION_SECRET are both set (currently switched off on the deployment). When on, every /api request except signing in
 and the health check needs a session cookie. Accounts are documents "users/<email>.json" with a scrypt password
 hash; the cookie is signed with JUNCTION_SECRET and checked against the account on every request, so removing
 an account or changing its password ends its sessions at once.
@@ -27,7 +27,9 @@ from typing import Optional
 from . import store
 
 SECRET = os.environ.get("JUNCTION_SECRET", "")
-ENABLED = bool(SECRET)
+# Sign-in is switched off for now: the app opens without a sign-in page even when JUNCTION_SECRET is set.
+# To turn it back on, set JUNCTION_AUTH=on (with JUNCTION_SECRET) and redeploy.
+ENABLED = bool(SECRET) and os.environ.get("JUNCTION_AUTH", "off").lower() == "on"
 COOKIE = "junction_session"
 SESSION_S = int(os.environ.get("JUNCTION_SESSION_DAYS", "14")) * 86400
 OPEN = ("/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/health")
