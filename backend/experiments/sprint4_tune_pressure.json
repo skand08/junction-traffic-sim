@@ -1,0 +1,249 @@
+[
+ {
+  "settings": {
+   "min_green_s": 5,
+   "reach_m": 30,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   233.6,
+   257.2,
+   279.3
+  ],
+  "mean": 256.7,
+  "teleports": [
+   3,
+   8,
+   15
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 5,
+   "reach_m": 60,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   243.0,
+   276.3,
+   280.2
+  ],
+  "mean": 266.5,
+  "teleports": [
+   5,
+   19,
+   9
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 5,
+   "reach_m": 100,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   274.8,
+   262.3,
+   268.4
+  ],
+  "mean": 268.5,
+  "teleports": [
+   16,
+   2,
+   10
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 30,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   227.2,
+   226.8,
+   232.1
+  ],
+  "mean": 228.7,
+  "teleports": [
+   1,
+   2,
+   1
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 60,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   224.8,
+   227.6,
+   226.6
+  ],
+  "mean": 226.3,
+  "teleports": [
+   6,
+   1,
+   1
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 100,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   227.2,
+   234.4,
+   224.0
+  ],
+  "mean": 228.5,
+  "teleports": [
+   2,
+   2,
+   2
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 15,
+   "reach_m": 30,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   228.7,
+   232.1,
+   233.8
+  ],
+  "mean": 231.5,
+  "teleports": [
+   0,
+   7,
+   1
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 15,
+   "reach_m": 60,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   231.8,
+   237.1,
+   232.4
+  ],
+  "mean": 233.8,
+  "teleports": [
+   3,
+   2,
+   0
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 15,
+   "reach_m": 100,
+   "decision_s": 5,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   235.7,
+   229.8,
+   233.0
+  ],
+  "mean": 232.8,
+  "teleports": [
+   1,
+   0,
+   2
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 60,
+   "decision_s": 3,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   225.1,
+   229.9,
+   226.2
+  ],
+  "mean": 227.1,
+  "teleports": [
+   2,
+   0,
+   1
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 60,
+   "decision_s": 10,
+   "max_wait_s": 90
+  },
+  "travel_time_s": [
+   230.1,
+   242.4,
+   235.0
+  ],
+  "mean": 235.9,
+  "teleports": [
+   1,
+   2,
+   1
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 60,
+   "decision_s": 5,
+   "max_wait_s": 60
+  },
+  "travel_time_s": [
+   226.6,
+   228.4,
+   228.1
+  ],
+  "mean": 227.7,
+  "teleports": [
+   1,
+   2,
+   5
+  ]
+ },
+ {
+  "settings": {
+   "min_green_s": 10,
+   "reach_m": 60,
+   "decision_s": 5,
+   "max_wait_s": 120
+  },
+  "travel_time_s": [
+   222.7,
+   221.8,
+   222.2
+  ],
+  "mean": 222.2,
+  "teleports": [
+   1,
+   1,
+   0
+  ]
+ }
+]

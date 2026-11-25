@@ -141,9 +141,14 @@ class PressureController:
     """Pressure-based signal control over a running SUMO (libsumo) simulation. Call step() once after
     every simulationStep(). Used by batch runs and by the live view, so both behave the same."""
 
-    def __init__(self, ls, net_file: str):
+    def __init__(self, ls, net_file: str, params: dict | None = None):
+        """params (all optional): min_green_s, decision_s, max_wait_s, reach_m. Defaults are the MP_ constants."""
+        p = params or {}
+        self.min_green = float(p.get("min_green_s", MP_MIN_GREEN))
+        self.decision = int(p.get("decision_s", MP_DECISION))
+        self.max_wait = float(p.get("max_wait_s", MP_MAX_WAIT))
         self.ls = ls
-        self.fwd, self.back = _lane_reach(net_file)
+        self.fwd, self.back = _lane_reach(net_file, p.get("reach_m"))
         self.ctrl = {}
         for tid in ls.trafficlight.getIDList():
             logic = ls.trafficlight.getAllProgramLogics(tid)[0]
@@ -201,11 +206,11 @@ class PressureController:
                         c.update(cur=c["target"], since=now, until=None, target=None)
                 continue
             c["served"][c["cur"]] = now
-            if now - c["since"] < MP_MIN_GREEN or int(now) % MP_DECISION:
+            if now - c["since"] < self.min_green or int(now) % self.decision:
                 continue
             pressure = {g: sum(h_in(i) - h_out(o) for i, o in c["mov"][g]) for g in c["greens"]}
             # starvation guard: a phase with waiting cars gets green after MP_MAX_WAIT seconds
-            starved = [g for g in c["greens"] if g != c["cur"] and now - c["served"][g] > MP_MAX_WAIT
+            starved = [g for g in c["greens"] if g != c["cur"] and now - c["served"][g] > self.max_wait
                        and sum(h1(i) for i, _ in c["mov"][g]) > 0]
             if starved:
                 best = max(starved, key=lambda g: now - c["served"][g])
@@ -230,7 +235,7 @@ def _run_max_pressure(job: dict, out: Path):
     fwd_back_net = job["net_file"]
     ls.start(["sumo", *_common_args(job, out)])
     try:
-        ctrl = PressureController(ls, fwd_back_net)
+        ctrl = PressureController(ls, fwd_back_net, job.get("pressure"))
         end = job["end"] + config.DRAIN_S
         while ls.simulation.getTime() < end:
             ls.simulationStep()
